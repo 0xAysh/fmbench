@@ -21,6 +21,9 @@ PROBE_TIMEOUT_S = 5
 # The node has caught up when its latest block is at most this old: two mainnet slots, so one
 # missed slot does not hold the wait.
 AT_TIP_S = 24
+# The indexer series of the wait: steps finished since the start, and failed steps.
+STEPS = prom.FILTER_MAPS_PREFIX + "step_duration_seconds_count"
+FAILURES = prom.FILTER_MAPS_PREFIX + "failures"
 
 
 class ColdError(Exception):
@@ -47,17 +50,16 @@ def restart(
     dry_run: bool = False,
 ) -> None:
     """Drops the page cache around a node restart, then waits until the node has caught up: its
-    latest block is at most `AT_TIP_S` old and, in index mode, `reth_filter_maps_last_indexed_block`
-    has reached `reth_filter_maps_store_target` from before the stop. A restarted node unwinds and
-    executes its last blocks again, and then the blocks of its downtime; a query sent earlier would
-    compete with that work.
+    latest block is at most `AT_TIP_S` old and, in index mode, the indexer has finished a step
+    since the start, none has failed, and `reth_filter_maps_last_indexed_block` is back at its
+    value before the stop. A restarted node unwinds and executes its last blocks again, and then
+    the blocks of its downtime; a query sent earlier would compete with that work.
 
-    The index head always stays below the current target: it ends before the last block of the
-    last finished map, and the map in progress is not stored. A restarted indexer reports its
-    stored head at once, so only a step after the start that finishes a map past the old target
-    reaches it, once the finalized block has moved on."""
+    The first indexer step renders the blocks of the map in progress again, since only finished
+    maps are stored. Later steps render only the blocks finalized since, as every epoch of a warm
+    run does, so `cold` does not wait for finality to move."""
     ready = f"the latest block is at most {AT_TIP_S} s old" + (
-        " and reth_filter_maps_last_indexed_block has reached reth_filter_maps_store_target from before the stop"
+        " and the FilterMaps indexer has finished a step since the start, with its head back at its value before the stop"
         if index_mode
         else ""
     )
@@ -66,40 +68,44 @@ def restart(
             print(shlex.join(step))
         print(f"wait up to {timeout_s:.0f} s until {ready}")
         return
-    target = None
+    head = None
     if index_mode:
         try:
-            value = prom.scrape(metrics_url, timeout_s=PROBE_TIMEOUT_S).value(prom.FILTER_MAPS_PREFIX + "store_target")
+            window = prom.indexed_window(prom.scrape(metrics_url, timeout_s=PROBE_TIMEOUT_S))
         except OSError as error:
             raise ColdError(f"cannot read {metrics_url} before the stop: {error}") from error
-        if not value:
-            raise ColdError("the node reports no reth_filter_maps_store_target before the stop")
-        target = int(value)
+        if window is None:
+            raise ColdError("the node reports no FilterMaps index before the stop")
+        head = window[1]
     for step in steps(unit):
         result = subprocess.run(step, capture_output=True, text=True)
         if result.returncode != 0:
             raise ColdError(f"`{shlex.join(step)}` failed ({result.returncode}): {result.stderr.strip()}")
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        if _caught_up(rpc_url, metrics_url, target):
+        if _caught_up(rpc_url, metrics_url, head):
             return
         time.sleep(1)
     raise ColdError(f"the node was not ready after {timeout_s:.0f} s: waited until {ready}")
 
 
-def _caught_up(rpc_url: str, metrics_url: str, target: int | None) -> bool:
-    """Whether the latest block is at most `AT_TIP_S` old and the index head has reached `target`,
-    the index target before the stop (`None` outside index mode)."""
+def _caught_up(rpc_url: str, metrics_url: str, head: int | None) -> bool:
+    """Whether the latest block is at most `AT_TIP_S` old and, given the index head before the stop
+    (`None` outside index mode), the indexer has finished a step since the start and its head is
+    back at `head`. A failed step raises `ColdError`: the counter never goes back to 0."""
     try:
         latest = rpc.Client(rpc_url, timeout_s=PROBE_TIMEOUT_S).call("eth_getBlockByNumber", ["latest", False])
         if time.time() - int(latest["timestamp"], 16) > AT_TIP_S:
             return False
-        if target is None:
+        if head is None:
             return True
-        window = prom.indexed_window(prom.scrape(metrics_url, timeout_s=PROBE_TIMEOUT_S))
+        snapshot = prom.scrape(metrics_url, timeout_s=PROBE_TIMEOUT_S)
     except (rpc.RpcError, OSError):
         return False
-    return window is not None and window[1] >= target
+    if failures := snapshot.value(FAILURES):
+        raise ColdError(f"the FilterMaps indexer has failed since the start ({FAILURES} {failures:.0f}); see the node log")
+    window = prom.indexed_window(snapshot)
+    return bool(snapshot.value(STEPS)) and window is not None and window[1] >= head
 
 
 def add_parser(subparsers: Any) -> None:
