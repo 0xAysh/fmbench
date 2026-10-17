@@ -128,7 +128,9 @@ def fell_back(cls: str, counters: dict[str, dict[str, float]]) -> bool:
 
 def d2_check(index_ms: float | None, index_error: Any, bloom_p50_ms: float | None) -> str:
     """The D2 condition: the index path's whole-window Q1 request costs no more than the bloom
-    path's p50 of the same filter at 100,000 blocks. A timeout on the index path fails it."""
+    path's p50 of the same filter at 100,000 blocks. A timeout on the index path fails it. An
+    index request that fell back to the header bloom (`fell_back`) comes in as `index_ms=None`,
+    so it is not measured."""
     if index_error == rpc.TIMEOUT:
         return FAIL
     if index_error is not None or index_ms is None or bloom_p50_ms is None:
@@ -264,12 +266,13 @@ def missing_classes(rows: list[dict[str, Any]], gates: dict[str, Any]) -> list[s
 
 
 def sweep_mean(summaries: list[dict[str, Any]]) -> dict[str, float] | None:
-    """Returns the mean total time, blocks/s and requests/s over the completed runs of one sweep,
-    or `None` with fewer than two."""
+    """Returns the number of completed runs of one sweep (`completed`) and their mean total time,
+    blocks/s and requests/s, or `None` with fewer than two."""
     completed = [s for s in summaries if s["completed"]]
     if len(completed) < 2:
         return None
-    return {key: sum(s[key] for s in completed) / len(completed) for key in ("total_ms", "blocks_per_s", "requests_per_s")}
+    means = {key: sum(s[key] for s in completed) / len(completed) for key in ("total_ms", "blocks_per_s", "requests_per_s")}
+    return {"completed": len(completed), **means}
 
 
 def _cell_order(key: tuple[str, sample.Width]) -> tuple[str, int]:
@@ -323,14 +326,14 @@ def seq_cells(found: dict[str, Any] | None) -> Cells | None:
     return cells(meta.read_jsonl(os.path.join(found["dir"], "seq.jsonl"))) if found else None
 
 
-def build(root: str, gates: dict[str, Any], today: str | None = None) -> tuple[str, dict[str, list[list[Any]]]]:
-    """Returns `report.md` and the chart CSVs (name → rows, header first) of one commit. `today`
-    is the results directory of the Reth 2.7.0 commit (run C), whose `today` runs fill the today
-    columns."""
+def build(root: str, gates: dict[str, Any], today_root: str | None = None) -> tuple[str, dict[str, list[list[Any]]]]:
+    """Returns `report.md` and the chart CSVs (name → rows, header first) of one commit.
+    `today_root` is the results directory of the Reth 2.7.0 commit (run C), whose `today` runs
+    fill the today columns."""
     runs = load_runs(root)
-    if today is not None:
-        runs += [r for r in load_runs(today) if r["meta"]["mode"] == "today"]
-    report = _Report(runs, gates, os.path.basename(os.path.normpath(root)), today)
+    if today_root is not None:
+        runs += [r for r in load_runs(today_root) if r["meta"]["mode"] == "today"]
+    report = _Report(runs, gates, os.path.basename(os.path.normpath(root)), today_root)
     for section in (report.g7, report.g8, report.g1, report.g4, report.sweeps, report.oneshot, report.index_build, report.summary):
         section()
     return "\n".join(report.md) + "\n", report.charts
@@ -339,10 +342,10 @@ def build(root: str, gates: dict[str, Any], today: str | None = None) -> tuple[s
 class _Report:
     """The sections of one commit's report, written in order into `md` and `charts`."""
 
-    def __init__(self, runs: list[dict[str, Any]], gates: dict[str, Any], commit: str, today: str | None) -> None:
+    def __init__(self, runs: list[dict[str, Any]], gates: dict[str, Any], commit: str, today_root: str | None) -> None:
         self.runs, self.gates, self.commit = runs, gates, commit
         self.floor = gates["spread_floor"]
-        today_source = f"the `today` runs in `{today}`" if today else "none (pass `--today results/<2.7.0 commit>/`)"
+        today_source = f"the `today` runs in `{today_root}`" if today_root else "none (pass `--today results/<2.7.0 commit>/`)"
         self.md = [f"# FilterMaps bench report: commit {commit}", "", f"Gates: `gates.json`, spread floor {self.floor:.0%}. Reth 2.7.0 (today): {today_source}.", ""]
         self.charts: dict[str, list[list[Any]]] = {
             "latency_vs_width.csv": [["class", "width", "mode", "cache", "p50_ms", "p90_ms"]],
@@ -469,8 +472,7 @@ class _Report:
                 rows.append(values)
             means = sweep_mean(lines)
             if means:
-                completed = sum(line["completed"] for line in lines)
-                rows.append([lines[0]["filter_id"], lines[0]["chunk"], mode, f"mean of {completed} completed", lines[0]["planned_requests"],
+                rows.append([lines[0]["filter_id"], lines[0]["chunk"], mode, f"mean of {means['completed']} completed", lines[0]["planned_requests"],
                              means["total_ms"] / 1000, means["blocks_per_s"], means["requests_per_s"], None, None, None, None])
         self.heading("Sweeps")
         self.md += _table(["filter", "chunk", "mode", "run", "requests", "total s", "blocks/s", "requests/s", "logs", "headers read", "receipt sets read", "completed"],

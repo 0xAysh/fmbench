@@ -196,7 +196,6 @@ class G4Test(unittest.TestCase):
         self.assertEqual(report.g4_verdict(reference, [10.0] * 95 + [60.0] * 5, GATES)[2], "fail")
         self.assertEqual(report.g4_verdict([], [10.0], GATES)[2], "not measured")
 
-
     def test_load_is_compared_with_the_same_load_with_the_index_off(self):
         idle, loaded = [10.0] * 100, [20.0] * 100
         rows = report.g4_rows({("off", "bloom"): idle, ("catchup", "index"): [10.2] * 100, ("load", "bloom"): loaded, ("load", "index"): [20.4] * 100}, GATES)
@@ -214,7 +213,7 @@ def summary(run, completed=True, total_ms=1000.0, blocks_per_s=100.0, requests_p
 class SweepMeanTest(unittest.TestCase):
     def test_is_the_mean_of_the_completed_runs(self):
         means = report.sweep_mean([summary(1), summary(2, total_ms=3000.0, blocks_per_s=50.0, requests_per_s=1.0), summary(3, False, 10.0, None, None)])
-        self.assertEqual(means, {"total_ms": 2000.0, "blocks_per_s": 75.0, "requests_per_s": 1.5})
+        self.assertEqual(means, {"completed": 2, "total_ms": 2000.0, "blocks_per_s": 75.0, "requests_per_s": 1.5})
 
     def test_needs_two_completed_runs(self):
         self.assertIsNone(report.sweep_mean([summary(1), summary(2, completed=False)]))
