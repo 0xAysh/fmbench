@@ -70,7 +70,7 @@ def node(unit: str) -> dict[str, Any]:
         with open(exe, "rb") as binary:
             sha256 = _sha256(binary)
         with open(f"/proc/{pid}/cmdline", "rb") as file:
-            cmdline = [arg.decode() for arg in file.read().split(b"\0") if arg]
+            cmdline = [part.decode() for part in file.read().split(b"\0") if part]
         # `/proc/<pid>/exe` still runs the started binary after a deploy swaps the symlink.
         version = subprocess.run([exe, "--version"], capture_output=True, text=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError) as error:
