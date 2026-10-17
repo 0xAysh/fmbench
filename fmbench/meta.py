@@ -32,24 +32,21 @@ def add_node_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--rpc", default=DEFAULT_RPC, help="the node's HTTP JSON-RPC URL")
     parser.add_argument("--metrics", default=DEFAULT_METRICS, help="the node's --metrics URL")
     parser.add_argument("--unit", default=DEFAULT_UNIT, help="the node's systemd unit")
-    parser.add_argument("--pid", type=int, help="the node's process id (default: the unit's main process)")
 
 
 def add_result_args(parser: argparse.ArgumentParser) -> None:
     """Adds the options of every command that writes a result directory."""
     parser.add_argument("--mode", required=True, choices=MODES, help="index (--filter-maps), bloom (same binary without it), today (Reth 2.7.0)")
     parser.add_argument("--out", default="results", help="results root: writes <out>/<commit>/<run-id>/")
-    parser.add_argument("--run-id", help="the run directory name (default: command, mode, cache and UTC time)")
 
 
 def now() -> str:
+    """Returns the UTC time, to the second, in ISO 8601."""
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def node_pid(unit: str, pid: int | None) -> int:
-    """Returns `pid`, or the main process of the systemd `unit`."""
-    if pid is not None:
-        return pid
+def node_pid(unit: str) -> int:
+    """Returns the main process of the systemd `unit`."""
     try:
         out = subprocess.run(
             ["systemctl", "show", "-p", "MainPID", "--value", unit],
@@ -58,15 +55,15 @@ def node_pid(unit: str, pid: int | None) -> int:
             check=True,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError) as error:
-        raise MetaError(f"cannot read the main process of unit {unit!r} ({error}); pass --pid") from error
+        raise MetaError(f"cannot read the main process of unit {unit!r} ({error})") from error
     if not out.isdigit() or out == "0":
-        raise MetaError(f"unit {unit!r} has no running process; start it or pass --pid")
+        raise MetaError(f"unit {unit!r} has no running process; start it")
     return int(out)
 
 
-def node(unit: str, pid: int | None) -> dict[str, Any]:
+def node(unit: str) -> dict[str, Any]:
     """Returns the node binary (path, sha256), its commit and version, and its command line."""
-    pid = node_pid(unit, pid)
+    pid = node_pid(unit)
     exe = f"/proc/{pid}/exe"
     try:
         path = os.readlink(exe)
@@ -99,17 +96,16 @@ def check_mode(mode: str, cmdline: list[str]) -> None:
         raise MetaError(f"mode {mode!r}, but the node runs {state} --filter-maps: {' '.join(cmdline)}")
 
 
-def collect(command: str, mode: str, cache: str, unit: str, pid: int | None, **extra: Any) -> dict[str, Any]:
+def collect(command: str, mode: str, cache: str, unit: str, **extra: Any) -> dict[str, Any]:
     """Returns the `meta.json` of a run that starts now."""
-    info = node(unit, pid)
+    info = node(unit)
     check_mode(mode, info["cmdline"])
     datadir = arg(info["cmdline"], "--datadir")
     return {
         "command": command,
         "mode": mode,
         "cache": cache,
-        "commit": info["commit"],
-        **{k: v for k, v in info.items() if k != "commit"},
+        **info,
         "datadir": datadir,
         "filesystem": _run(["findmnt", "-n", "-o", "TARGET,SOURCE,FSTYPE,OPTIONS", "-T", datadir]) if datadir else None,
         "uname": _run(["uname", "-a"]),
@@ -128,18 +124,18 @@ def file_info(path: str) -> dict[str, str]:
         return {"file": os.path.basename(path), "sha256": _sha256(file)}
 
 
-def run_dir(out: str, meta: dict[str, Any], run_id: str | None, label: str | None = None) -> str:
-    """Creates and returns `<out>/<commit>/<run-id>/`, the commit shortened to 10 characters. The
-    default run id is the command, mode, cache state, `label` and start time."""
-    if run_id is None:
-        stamp = meta["started"].replace("-", "").replace(":", "")
-        run_id = "-".join(part for part in (meta["command"], meta["mode"], meta["cache"], label, stamp) if part)
+def run_dir(out: str, meta: dict[str, Any], label: str | None = None) -> str:
+    """Creates and returns `<out>/<commit>/<run-id>/`, the commit shortened to 10 characters and
+    the run id made of the command, mode, cache state, `label` and start time."""
+    stamp = meta["started"].replace("-", "").replace(":", "")
+    run_id = "-".join(part for part in (meta["command"], meta["mode"], meta["cache"], label, stamp) if part)
     path = os.path.join(out, meta["commit"][:10], run_id)
     os.makedirs(path, exist_ok=False)
     return path
 
 
 def write(directory: str, meta: dict[str, Any]) -> None:
+    """Writes `meta.json` into a run directory, replacing the one written at the start."""
     with open(os.path.join(directory, "meta.json"), "w") as file:
         json.dump(meta, file, indent=2)
         file.write("\n")
@@ -147,11 +143,11 @@ def write(directory: str, meta: dict[str, Any]) -> None:
 
 def arg(cmdline: list[str], flag: str) -> str | None:
     """Returns the value of `flag` (`--flag value` or `--flag=value`) in a command line."""
-    for i, arg in enumerate(cmdline):
-        if arg == flag and i + 1 < len(cmdline):
+    for i, item in enumerate(cmdline):
+        if item == flag and i + 1 < len(cmdline):
             return cmdline[i + 1]
-        if arg.startswith(flag + "="):
-            return arg[len(flag) + 1 :]
+        if item.startswith(flag + "="):
+            return item[len(flag) + 1 :]
     return None
 
 

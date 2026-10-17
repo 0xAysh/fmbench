@@ -430,7 +430,7 @@ def add_parser(subparsers: Any) -> None:
 
 
 def main(args: argparse.Namespace) -> int:
-    node = meta.node(args.unit, args.pid)
+    node = meta.node(args.unit)
     meta.check_mode("index", node["cmdline"])
     indexed = prom.indexed_window(prom.scrape(args.metrics))
     if indexed is None:

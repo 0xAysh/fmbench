@@ -153,7 +153,6 @@ def main(args: argparse.Namespace) -> int:
         args.mode,
         args.cache,
         args.unit,
-        args.pid,
         kind=header.get("kind"),
         queries=meta.file_info(args.queries),
         queries_used=len(queries),
@@ -161,7 +160,7 @@ def main(args: argparse.Namespace) -> int:
         timeout_s=args.timeout,
         spread=args.spread,
     )
-    directory = meta.run_dir(args.out, info, args.run_id, header.get("kind"))
+    directory = meta.run_dir(args.out, info, header.get("kind"))
     meta.write(directory, info)
     client = rpc.Client(args.rpc, timeout_s=args.timeout)
     errors = 0

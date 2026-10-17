@@ -181,13 +181,13 @@ def add_parser(subparsers: Any) -> None:
 def main(args: argparse.Namespace) -> int:
     if args.phase == "off" and args.mode == "index":
         raise SystemExit("phase off is the index-off reference: use --mode bloom")
-    info = meta.collect("watch", args.mode, "warm", args.unit, args.pid, phase=args.phase, interval_s=args.interval, log_file=args.log_file)
+    info = meta.collect("watch", args.mode, "warm", args.unit, phase=args.phase, interval_s=args.interval, log_file=args.log_file)
     if meta.arg(info["cmdline"], "--log.file.format") != "json":
         raise SystemExit("the node does not log JSON to its file: start it with --log.file.format json")
     datadir = args.datadir or info["datadir"]
     if datadir is None:
         raise SystemExit("the node has no --datadir on its command line: pass --datadir")
-    directory = meta.run_dir(args.out, info, args.run_id, args.phase)
+    directory = meta.run_dir(args.out, info, args.phase)
     meta.write(directory, info)
     tail = LogTail(args.log_file)
     client = rpc.Client(args.rpc, timeout_s=30)

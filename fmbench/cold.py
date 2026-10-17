@@ -84,9 +84,5 @@ def add_parser(subparsers: Any) -> None:
 
 
 def main(args: argparse.Namespace) -> int:
-    try:
-        restart(args.unit, args.rpc, args.metrics, args.mode == "index", args.timeout, args.dry_run)
-    except ColdError as error:
-        print(f"cold: {error}")
-        return 1
+    restart(args.unit, args.rpc, args.metrics, args.mode == "index", args.timeout, args.dry_run)
     return 0

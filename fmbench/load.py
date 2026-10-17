@@ -176,11 +176,11 @@ def main(args: argparse.Namespace) -> int:
     if mix.missing:
         print(f"load: no query for {', '.join(mix.missing)}; the other weights are used as given")
     info = meta.collect(
-        "load", args.mode, "warm", args.unit, args.pid,
+        "load", args.mode, "warm", args.unit,
         kind=header.get("kind"), queries=meta.file_info(args.queries), mix=args.mix, clients=counts,
         warmup_s=args.warmup, duration_s=args.duration, seed=args.seed, timeout_s=args.timeout,
     )
-    directory = meta.run_dir(args.out, info, args.run_id, "load")
+    directory = meta.run_dir(args.out, info, "load")
     meta.write(directory, info)
     with open(os.path.join(directory, "load.jsonl"), "w") as out:
         for clients in counts:

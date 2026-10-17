@@ -12,7 +12,7 @@ python3 -m fmbench <command> -h
 ## The node
 
 - Run the kit as the node's user on the node's machine: it reads `/proc/<pid>` of the `reth`
-  systemd unit (`--unit`, or `--pid`) for the binary, its commit and its flags.
+  systemd unit (`--unit`) for the binary, its commit and its flags.
 - `--mode` must match the node: `index` needs `--filter-maps`, `bloom` and `today` need it off.
   A run with the wrong mode is refused.
 - Flags (roadmap §1.4): `--rpc.max-blocks-per-filter 0 --rpc.max-logs-per-response 0

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from fmbench import cold, equal, load, meta, report, run, sample, sweep, watch
+from fmbench import cold, equal, load, meta, report, rpc, run, sample, sweep, watch
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -16,9 +16,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except meta.MetaError as error:
+    except (meta.MetaError, cold.ColdError, rpc.RpcError) as error:
         print(f"fmbench: {error}", file=sys.stderr)
-        return 2
+        return 1
 
 
 if __name__ == "__main__":

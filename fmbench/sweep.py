@@ -81,7 +81,6 @@ def main(args: argparse.Namespace) -> int:
         args.mode,
         "warm",
         args.unit,
-        args.pid,
         kind="sweep",
         queries=meta.file_info(args.queries),
         filter_id=args.query,
@@ -90,7 +89,7 @@ def main(args: argparse.Namespace) -> int:
         range=[first, last],
         timeout_s=args.timeout,
     )
-    directory = meta.run_dir(args.out, info, args.run_id, f"{args.query}-c{args.chunk}")
+    directory = meta.run_dir(args.out, info, f"{args.query}-c{args.chunk}")
     meta.write(directory, info)
     client = rpc.Client(args.rpc, timeout_s=args.timeout)
     with open(os.path.join(directory, "sweep.jsonl"), "w") as out:
