@@ -15,7 +15,7 @@ import time
 from collections import Counter
 from typing import Any
 
-from fmbench import meta, rpc, sample, stats
+from fmbench import meta, prom, rpc, run, sample, stats
 
 # The heavy-user mix (weights per class).
 HEAVY = {"Q1": 20, "Q2": 15, "Q8": 15, "Q9": 20, "Q3": 10, "Q5": 10, "Q6": 10}
@@ -43,11 +43,11 @@ class Mix:
         self.classes = [cls for cls in weights if cls in by_class]
         self.weights = [weights[cls] for cls in self.classes]
         self.missing = [cls for cls in weights if cls not in by_class]
-        self._queries = by_class
+        self.queries = by_class
 
     def draw(self, rng: random.Random) -> dict[str, Any]:
         cls = rng.choices(self.classes, self.weights)[0]
-        return rng.choice(self._queries[cls])
+        return rng.choice(self.queries[cls])
 
 
 def summarize(
@@ -171,6 +171,8 @@ def main(args: argparse.Namespace) -> int:
     mix = Mix(queries, args.mix)
     if not mix.classes:
         raise SystemExit(f"{args.queries} has no query of the mix's classes at most {MAX_WIDTH} blocks wide")
+    if args.mode == "index":
+        run.check_window([q for qs in mix.queries.values() for q in qs], prom.scrape(args.metrics))
     if mix.missing:
         print(f"load: no query for {', '.join(mix.missing)}; the other weights are used as given")
     info = meta.collect(

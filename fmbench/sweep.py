@@ -93,12 +93,11 @@ def main(args: argparse.Namespace) -> int:
     directory = meta.run_dir(args.out, info, args.run_id, f"{args.query}-c{args.chunk}")
     meta.write(directory, info)
     client = rpc.Client(args.rpc, timeout_s=args.timeout)
-    metrics_url = None if args.mode == "today" else args.metrics
     with open(os.path.join(directory, "sweep.jsonl"), "w") as out:
         for run_number in range(1, args.runs + 1):
             lines = []
             for n, (a, b) in enumerate(planned, 1):
-                measured = run.measure(client, metrics_url, args.query, run_number, {**selector, "fromBlock": hex(a), "toBlock": hex(b)})
+                measured = run.measure(client, args.metrics, args.query, run_number, {**selector, "fromBlock": hex(a), "toBlock": hex(b)})
                 line = {"run": run_number, "chunk_from": a, "chunk_to": b, **{k: v for k, v in measured.items() if k not in ("query_id", "rep")}}
                 lines.append(line)
                 out.write(json.dumps(line) + "\n")

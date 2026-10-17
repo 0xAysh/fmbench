@@ -99,18 +99,15 @@ def result_line(
     }
 
 
-def measure(
-    client: rpc.Client, metrics_url: str | None, query_id: str, rep: int, filter_: dict[str, Any]
-) -> dict[str, Any]:
+def measure(client: rpc.Client, metrics_url: str, query_id: str, rep: int, filter_: dict[str, Any]) -> dict[str, Any]:
     """Runs one query: scrape, send the request (timed on the raw bytes), scrape again, then
-    parse, count, digest and take the counter deltas. Without `metrics_url` (mode `today`) there
-    are no counters."""
+    parse, count, digest and take the counter deltas. Every mode scrapes, so the requests of all
+    modes are paced alike; Reth 2.7.0 (mode `today`) has no such counters, so its deltas are empty."""
     body = client.request_body("eth_getLogs", [filter_])
-    before = prom.scrape(metrics_url) if metrics_url else None
+    before = prom.scrape(metrics_url)
     response = client.call_raw(body)
-    after = prom.scrape(metrics_url) if metrics_url else None
-    counters = counter_delta(before, after) if before is not None and after is not None else {}
-    return result_line(query_id, rep, response, counters)
+    after = prom.scrape(metrics_url)
+    return result_line(query_id, rep, response, counter_delta(before, after))
 
 
 def check_window(queries: list[dict[str, Any]], snapshot: prom.Snapshot) -> None:
@@ -167,7 +164,6 @@ def main(args: argparse.Namespace) -> int:
     directory = meta.run_dir(args.out, info, args.run_id, header.get("kind"))
     meta.write(directory, info)
     client = rpc.Client(args.rpc, timeout_s=args.timeout)
-    metrics_url = None if args.mode == "today" else args.metrics
     errors = 0
     with open(os.path.join(directory, "seq.jsonl"), "w") as out:
         # Repetition-major order: the other queries run between two repetitions of one query, so a
@@ -177,7 +173,7 @@ def main(args: argparse.Namespace) -> int:
                 if args.cache == "cold":
                     cold.restart(args.unit, args.rpc, args.metrics, args.mode == "index")
                     client.close()
-                line = measure(client, metrics_url, query["id"], rep, query["filter"])
+                line = measure(client, args.metrics, query["id"], rep, query["filter"])
                 errors += line["error"] is not None
                 out.write(json.dumps(line) + "\n")
                 out.flush()
