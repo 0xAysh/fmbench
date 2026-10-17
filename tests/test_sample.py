@@ -242,8 +242,9 @@ class G7Test(unittest.TestCase):
         )
 
     def test_a_width_wider_than_the_window_is_an_error(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as raised:
             sample.templates(self.selection(), [3_000_000], WINDOW, max_logs=200_000)
+        self.assertEqual(str(raised.exception), "width 3000000 is wider than the indexed window (2350124 blocks); use 'window'")
 
 
 class OneshotTest(unittest.TestCase):
@@ -351,7 +352,7 @@ class SampleFilesTest(unittest.TestCase):
         built = sample.build(FakeNode(), (1_000_000, 1_400_000), 7, 200, [500, 2000, 10000, 100000], 50, 1_000, "6ddddd1072")
         header, queries = built["g7"]
         # One Transfer per block: Q4 has about 500 logs at 500 blocks and 2,000 at 2,000. The
-        # popular emitters and pairs (Q3, Q5) pass the cap at 100,000 blocks, the factory topic
+        # popular emitters and pairs (Q3, Q5) exceed the cap at 100,000 blocks, the factory topic
         # (Q8) at 10,000.
         self.assertEqual(
             header["dropped_by_cap"],
