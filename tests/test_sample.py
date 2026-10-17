@@ -198,7 +198,9 @@ class G7Test(unittest.TestCase):
         return sample.Selection({"Q1": [rare], "Q3": [dense], "Q6": [rare, dense]}, {})
 
     def test_every_query_ends_at_to_block_and_the_cap_drops_dense_widths(self):
-        queries = sample.g7_queries(self.selection(), [500, 100_000, "window"], WINDOW, max_logs=200_000)
+        kept, dropped = sample.templates(self.selection(), [500, 100_000, "window"], WINDOW, max_logs=200_000)
+        self.assertEqual([t.query_id for t in dropped], ["Q3-w100000-000", "Q3-wwindow-000"])
+        queries = sample.g7_queries(kept, WINDOW)
         self.assertEqual(
             [(q["id"], q["expected_logs"], q["filter"]["fromBlock"]) for q in queries],
             [
@@ -233,7 +235,7 @@ class G7Test(unittest.TestCase):
 
     def test_the_wildcard_runs_at_the_narrow_widths(self):
         selection = sample.Selection({"Q7": [sample.Pick({"topics": []}, 900.0)]}, {})
-        queries = sample.g7_queries(selection, [500, 100_000], WINDOW, max_logs=200_000)
+        queries = sample.g7_queries(sample.templates(selection, [500, 100_000], WINDOW, max_logs=200_000)[0], WINDOW)
         self.assertEqual(
             [(q["id"], q["expected_logs"]) for q in queries],
             [("Q7-w1-000", 900), ("Q7-w10-000", 9000), ("Q7-w100-000", 90_000)],
@@ -241,7 +243,7 @@ class G7Test(unittest.TestCase):
 
     def test_a_width_wider_than_the_window_is_an_error(self):
         with self.assertRaises(ValueError):
-            sample.g7_queries(self.selection(), [3_000_000], WINDOW, max_logs=200_000)
+            sample.templates(self.selection(), [3_000_000], WINDOW, max_logs=200_000)
 
 
 class OneshotTest(unittest.TestCase):
@@ -284,7 +286,8 @@ class G1Test(unittest.TestCase):
         rare = sample.Pick({"address": [addr(1)], "topics": []}, 0.0005, 41)
         dense = sample.Pick({"address": [addr(2)], "topics": []}, 30.0)
         selection = sample.Selection({"Q1": [rare], "Q3": [dense], "Q6": [rare]}, {})
-        queries = sample.g1_queries(selection, [500, 100_000], WINDOW, 300, 200_000, random.Random(7))
+        kept, _ = sample.templates(selection, [500, 100_000], WINDOW, max_logs=200_000)
+        queries = sample.g1_queries(kept, WINDOW, 300, random.Random(7))
 
         self.assertEqual(len(queries), 300)
         self.assertEqual(len({q["id"] for q in queries}), 300)

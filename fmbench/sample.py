@@ -267,28 +267,27 @@ class Template(NamedTuple):
     expected: int
 
 
-def templates(selection: Selection, widths: list[Width], window: tuple[int, int]) -> list[Template]:
-    """Returns every filter of every class at every width of its class: `widths`, or
-    `NARROW_WIDTHS` for Q6 and Q7. The result cap is not applied."""
-    out = []
+def templates(
+    selection: Selection, widths: list[Width], window: tuple[int, int], max_logs: int
+) -> tuple[list[Template], list[Template]]:
+    """Returns every filter of every class at every width of its class (`widths`, or
+    `NARROW_WIDTHS` for Q6 and Q7), split by the result cap: the templates whose estimated logs
+    are at most `max_logs`, and the rest."""
+    kept: list[Template] = []
+    dropped: list[Template] = []
     for cls, picks in selection.filters.items():
         for width in NARROW_WIDTHS if cls in NARROW_CLASSES else widths:
             blocks = _blocks(width, window)
             for i, pick in enumerate(picks):
-                out.append(Template(f"{cls}-w{width}-{i:03d}", cls, width, blocks, pick, round(pick.rate * blocks)))
-    return out
+                t = Template(f"{cls}-w{width}-{i:03d}", cls, width, blocks, pick, round(pick.rate * blocks))
+                (kept if t.expected <= max_logs else dropped).append(t)
+    return kept, dropped
 
 
-def g7_queries(
-    selection: Selection, widths: list[Width], window: tuple[int, int], max_logs: int
-) -> list[dict[str, Any]]:
-    """Returns every template under the result cap (`expected_logs` at most `max_logs`), each
-    query ending at the window's last block."""
-    return [
-        _query(t.query_id, t.cls, t.width, t.expected, t.pick, window[1] - t.blocks + 1, window[1])
-        for t in templates(selection, widths, window)
-        if t.expected <= max_logs
-    ]
+def g7_queries(kept: list[Template], window: tuple[int, int]) -> list[dict[str, Any]]:
+    """Returns one query per template under the result cap, each ending at the window's last
+    block."""
+    return [_query(t.query_id, t.cls, t.width, t.expected, t.pick, window[1] - t.blocks + 1, window[1]) for t in kept]
 
 
 def oneshot_queries(selection: Selection, window: tuple[int, int]) -> list[dict[str, Any]]:
@@ -301,20 +300,12 @@ def oneshot_queries(selection: Selection, window: tuple[int, int]) -> list[dict[
     ]
 
 
-def g1_queries(
-    selection: Selection,
-    widths: list[Width],
-    window: tuple[int, int],
-    count: int,
-    max_logs: int,
-    rng: random.Random,
-) -> list[dict[str, Any]]:
+def g1_queries(kept: list[Template], window: tuple[int, int], count: int, rng: random.Random) -> list[dict[str, Any]]:
     """Returns `count` random queries for G1: a random class, then a random template of that
     class under the result cap, at a random position inside the window."""
     by_class: dict[str, list[Template]] = {}
-    for t in templates(selection, widths, window):
-        if t.expected <= max_logs:
-            by_class.setdefault(t.cls, []).append(t)
+    for t in kept:
+        by_class.setdefault(t.cls, []).append(t)
     classes = sorted(by_class)
     out = []
     for n in range(count):
@@ -382,6 +373,7 @@ def build(
         return len(node.call("eth_getLogs", [{"fromBlock": hex(first), "toBlock": hex(last), **filter_}]))
 
     selection = pick_filters(tally(receipts()), window_logs, rng)
+    kept, dropped = templates(selection, widths, window, max_logs)
     header = {
         "window": [first, last],
         "to_block": last,
@@ -391,12 +383,12 @@ def build(
         "node_commit": node_commit,
         "max_logs": max_logs,
         "classes": {cls: len(picks) for cls, picks in selection.filters.items()},
-        "dropped_by_cap": [t.query_id for t in templates(selection, widths, window) if t.expected > max_logs],
+        "dropped_by_cap": [t.query_id for t in dropped],
         **selection.notes,
     }
     return {
-        "g7": ({**header, "kind": "g7"}, g7_queries(selection, widths, window, max_logs)),
-        "g1": ({**header, "kind": "g1", "count": count}, g1_queries(selection, widths, window, count, max_logs, rng)),
+        "g7": ({**header, "kind": "g7"}, g7_queries(kept, window)),
+        "g1": ({**header, "kind": "g1", "count": count}, g1_queries(kept, window, count, rng)),
         "oneshot": ({**header, "kind": "oneshot", "widths": [WINDOW]}, oneshot_queries(selection, window)),
     }
 
