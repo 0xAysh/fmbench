@@ -22,21 +22,11 @@ from fmbench import meta, prom, rpc, stats
 BLOCK_MESSAGE = "Block added to canonical chain"
 
 NEW_PAYLOAD = "reth_consensus_engine_beacon_new_payload_latency"
-# off: the index off (the G4 reference); catchup: the index building; load: during a G8 load.
+# off: the index off (the catch-up's G4 reference); catchup: the index building; load: during a G8
+# load, in bloom mode as the reference of the index-mode one.
 PHASES = ("off", "catchup", "load")
-DERIVED = (
-    "blocks_per_s",
-    "maps_per_s",
-    "step_mean_s",
-    "write_mean_s",
-    "lag_blocks",
-    "lag_maps",
-    "bytes_per_block",
-    "block_count",
-    "block_p50_ms",
-    "block_p99_ms",
-    "new_payload_mean_ms",
-)
+# The timeout of the finalized-block request of each sample.
+RPC_TIMEOUT_S = 30
 
 _DURATION = re.compile(r"(\d+(?:\.\d+)?)(ns|µs|μs|us|ms|s)")
 _NS_PER_UNIT = {"ns": 1, "µs": 1_000, "μs": 1_000, "us": 1_000, "ms": 1_000_000, "s": 1_000_000_000}
@@ -140,6 +130,8 @@ class LogTail:
         self._partial = b""
 
     def read(self) -> list[str]:
+        """Returns the whole lines appended since the last read; a partial last line waits for
+        the next read."""
         status = os.stat(self.path)
         if status.st_ino != self._inode or status.st_size < self._offset:
             self._inode, self._offset, self._partial = status.st_ino, 0, b""
@@ -170,7 +162,7 @@ def add_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser("watch", help="index build rate, store size, index lag and block times over time")
     meta.add_node_args(parser)
     meta.add_result_args(parser)
-    parser.add_argument("--phase", required=True, choices=PHASES, help="off: index off (G4 reference); catchup: index building; load: during a G8 load")
+    parser.add_argument("--phase", required=True, choices=PHASES, help="off: index off (the catch-up's G4 reference); catchup: index building; load: during a G8 load, in both modes")
     parser.add_argument("--log-file", required=True, help="the node's JSON log file (reth.log under --log.file.directory/<chain>)")
     parser.add_argument("--datadir", help="the node's datadir (default: its --datadir)")
     parser.add_argument("--interval", type=float, default=10, help="seconds between samples")
@@ -190,7 +182,7 @@ def main(args: argparse.Namespace) -> int:
     directory = meta.run_dir(args.out, info, args.phase)
     meta.write(directory, info)
     tail = LogTail(args.log_file)
-    client = rpc.Client(args.rpc, timeout_s=30)
+    client = rpc.Client(args.rpc, timeout_s=RPC_TIMEOUT_S)
     started = time.monotonic()
     prev: Sample | None = None
     columns: list[str] | None = None
@@ -203,12 +195,12 @@ def main(args: argparse.Namespace) -> int:
         try:
             while args.duration is None or time.monotonic() - started < args.duration:
                 cur = _sample(time.monotonic() - started, args.metrics, client, datadir, tail, blocks)
+                derived = derive(prev, cur)
                 if columns is None:
                     columns = sorted(cur.series)
-                    rows.writerow(["time", "elapsed_s", "finalized", "store_bytes", "new_payload_sum", "new_payload_count", *columns, *DERIVED])
-                derived = derive(prev, cur)
+                    rows.writerow(["time", "elapsed_s", "finalized", "store_bytes", "new_payload_sum", "new_payload_count", *columns, *derived])
                 payload = cur.new_payload or (None, None)
-                rows.writerow([meta.now(), round(cur.elapsed_s, 3), cur.finalized, cur.store_bytes, *payload, *(cur.series.get(c) for c in columns), *(derived[c] for c in DERIVED)])
+                rows.writerow([meta.now(), round(cur.elapsed_s, 3), cur.finalized, cur.store_bytes, *payload, *(cur.series.get(c) for c in columns), *derived.values()])
                 watch_file.flush()
                 blocks_file.flush()
                 prev = cur
