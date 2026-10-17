@@ -82,14 +82,11 @@ def parse_logs(response: rpc.Response) -> tuple[list[dict[str, Any]] | None, Any
     return reply["result"], None
 
 
-def result_line(
-    query_id: str, rep: int, response: rpc.Response, counters: dict[str, dict[str, float]]
-) -> dict[str, Any]:
-    """Builds one `seq.jsonl` line. An error line has no log count and no digest."""
+def result_line(response: rpc.Response, counters: dict[str, dict[str, float]]) -> dict[str, Any]:
+    """Returns what one request measured: latency, bytes, logs, digest, error and counter deltas.
+    An error has no log count and no digest."""
     logs, error = parse_logs(response)
     return {
-        "query_id": query_id,
-        "rep": rep,
         "latency_ms": response.latency_ms,
         "bytes": len(response.body),
         "logs": None if logs is None else len(logs),
@@ -99,7 +96,7 @@ def result_line(
     }
 
 
-def measure(client: rpc.Client, metrics_url: str, query_id: str, rep: int, filter_: dict[str, Any]) -> dict[str, Any]:
+def measure(client: rpc.Client, metrics_url: str, filter_: dict[str, Any]) -> dict[str, Any]:
     """Runs one query: scrape, send the request (timed on the raw bytes), scrape again, then
     parse, count, digest and take the counter deltas. Every mode scrapes, so the requests of all
     modes are paced alike; Reth 2.7.0 (mode `today`) has no such counters, so its deltas are empty."""
@@ -107,24 +104,26 @@ def measure(client: rpc.Client, metrics_url: str, query_id: str, rep: int, filte
     before = prom.scrape(metrics_url)
     response = client.call_raw(body)
     after = prom.scrape(metrics_url)
-    return result_line(query_id, rep, response, counter_delta(before, after))
+    return result_line(response, counter_delta(before, after))
 
 
-def check_window(queries: list[dict[str, Any]], snapshot: prom.Snapshot) -> None:
-    """Refuses, in index mode, a query outside the indexed window: above the index head the node
-    has no maps, and below the first indexed block the bloom path would serve part of it."""
+def query_ranges(queries: list[dict[str, Any]]) -> list[tuple[str, int, int]]:
+    """Returns the id, first block and last block of each query."""
+    return [(q["id"], int(q["filter"]["fromBlock"], 16), int(q["filter"]["toBlock"], 16)) for q in queries]
+
+
+def check_window(ranges: list[tuple[str, int, int]], snapshot: prom.Snapshot) -> None:
+    """Refuses, in index mode, a range (label, first block, last block) outside the indexed
+    window: above the index head the node has no maps, and below the first indexed block the
+    bloom path would serve part of it."""
     window = prom.indexed_window(snapshot)
     if window is None:
         raise SystemExit("the node reports no indexed window (reth_filter_maps_*_indexed_block)")
     first, last = window
-    outside = [
-        q["id"]
-        for q in queries
-        if int(q["filter"]["fromBlock"], 16) < first or int(q["filter"]["toBlock"], 16) > last
-    ]
+    outside = [label for label, a, b in ranges if a < first or b > last]
     if outside:
         raise SystemExit(
-            f"{len(outside)} queries leave the indexed window {first}..{last} (first: {outside[0]}); "
+            f"{len(outside)} ranges leave the indexed window {first}..{last} (first: {outside[0]}); "
             "a query above the head has no maps, and below the first indexed block (the tail moves up as the "
             "chain grows) the bloom path serves part of it. Sample again with a larger --tail-margin"
         )
@@ -147,7 +146,7 @@ def main(args: argparse.Namespace) -> int:
     header, queries = sample.read_queries(args.queries)
     queries = queries[: args.limit]
     if args.mode == "index":
-        check_window(queries, prom.scrape(args.metrics))
+        check_window(query_ranges(queries), prom.scrape(args.metrics))
     info = meta.collect(
         "run",
         args.mode,
@@ -155,6 +154,7 @@ def main(args: argparse.Namespace) -> int:
         args.unit,
         kind=header.get("kind"),
         queries=meta.file_info(args.queries),
+        window=header.get("window"),
         queries_used=len(queries),
         reps=args.reps,
         timeout_s=args.timeout,
@@ -172,7 +172,7 @@ def main(args: argparse.Namespace) -> int:
                 if args.cache == "cold":
                     cold.restart(args.unit, args.rpc, args.metrics, args.mode == "index")
                     client.close()
-                line = measure(client, args.metrics, query["id"], rep, query["filter"])
+                line = {"query_id": query["id"], "rep": rep, **measure(client, args.metrics, query["filter"])}
                 errors += line["error"] is not None
                 out.write(json.dumps(line) + "\n")
                 out.flush()

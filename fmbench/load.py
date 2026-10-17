@@ -172,7 +172,7 @@ def main(args: argparse.Namespace) -> int:
     if not mix.classes:
         raise SystemExit(f"{args.queries} has no query of the mix's classes at most {MAX_WIDTH} blocks wide")
     if args.mode == "index":
-        run.check_window([q for qs in mix.queries.values() for q in qs], prom.scrape(args.metrics))
+        run.check_window(run.query_ranges([q for qs in mix.queries.values() for q in qs]), prom.scrape(args.metrics))
     if mix.missing:
         print(f"load: no query for {', '.join(mix.missing)}; the other weights are used as given")
     info = meta.collect(

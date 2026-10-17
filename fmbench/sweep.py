@@ -75,7 +75,7 @@ def main(args: argparse.Namespace) -> int:
     last = header["window"][1] if args.last is None else args.last
     planned = chunks(first, last, args.chunk)
     if args.mode == "index":
-        run.check_window([{"id": "sweep range", "filter": {"fromBlock": hex(first), "toBlock": hex(last)}}], prom.scrape(args.metrics))
+        run.check_window([("the sweep range", first, last)], prom.scrape(args.metrics))
     info = meta.collect(
         "sweep",
         args.mode,
@@ -96,8 +96,8 @@ def main(args: argparse.Namespace) -> int:
         for run_number in range(1, args.runs + 1):
             lines = []
             for n, (a, b) in enumerate(planned, 1):
-                measured = run.measure(client, args.metrics, args.query, run_number, {**selector, "fromBlock": hex(a), "toBlock": hex(b)})
-                line = {"run": run_number, "chunk_from": a, "chunk_to": b, **{k: v for k, v in measured.items() if k not in ("query_id", "rep")}}
+                measured = run.measure(client, args.metrics, {**selector, "fromBlock": hex(a), "toBlock": hex(b)})
+                line = {"run": run_number, "chunk_from": a, "chunk_to": b, **measured}
                 lines.append(line)
                 out.write(json.dumps(line) + "\n")
                 out.flush()

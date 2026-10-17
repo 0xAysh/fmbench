@@ -2,7 +2,7 @@ import hashlib
 import json
 import unittest
 
-from fmbench import rpc, run
+from fmbench import prom, rpc, run
 
 LOG_A = {
     "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
@@ -51,8 +51,6 @@ class DigestTest(unittest.TestCase):
 
 
 def scrape(text):
-    from fmbench import prom
-
     return prom.parse("# TYPE reth_rpc_eth_filter_headers_read_total counter\n"
                       "# TYPE reth_rpc_eth_filter_fallbacks_total counter\n"
                       "# TYPE reth_filter_maps_maps_written counter\n" + text)
@@ -84,12 +82,10 @@ class CounterDeltaTest(unittest.TestCase):
 class ResultLineTest(unittest.TestCase):
     def test_a_result_is_counted_and_digested(self):
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "result": [LOG_A, LOG_B]}).encode()
-        line = run.result_line("Q1-w500-000", 2, rpc.Response(200, body, 12.5, None), {})
+        line = run.result_line(rpc.Response(200, body, 12.5, None), {})
         self.assertEqual(
             line,
             {
-                "query_id": "Q1-w500-000",
-                "rep": 2,
                 "latency_ms": 12.5,
                 "bytes": len(body),
                 "logs": 2,
@@ -100,17 +96,23 @@ class ResultLineTest(unittest.TestCase):
         )
 
     def test_a_timeout_has_no_digest(self):
-        line = run.result_line("Q1-w500-000", 0, rpc.Response(None, b"", 1800000.0, "timeout"), {})
+        line = run.result_line(rpc.Response(None, b"", 1800000.0, "timeout"), {})
         self.assertEqual((line["error"], line["logs"], line["digest"]), ("timeout", None, None))
 
     def test_a_json_rpc_error_is_stored_with_no_digest(self):
         error = {"code": -32005, "message": "query exceeds max results 20000"}
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "error": error}).encode()
-        line = run.result_line("Q3-w100000-000", 0, rpc.Response(200, body, 80.0, None), {})
+        line = run.result_line(rpc.Response(200, body, 80.0, None), {})
         self.assertEqual((line["error"], line["logs"], line["digest"]), (error, None, None))
 
 
 class CheckWindowTest(unittest.TestCase):
     def test_a_full_history_index_starts_at_block_0(self):
         snapshot = scrape("reth_filter_maps_first_indexed_block 0\nreth_filter_maps_last_indexed_block 100\n")
-        run.check_window([{"id": "Q1-w10-000", "filter": {"fromBlock": hex(5), "toBlock": hex(14)}}], snapshot)
+        run.check_window([("Q1-w10-000", 5, 14)], snapshot)
+
+    def test_refuses_a_range_outside_the_window(self):
+        snapshot = scrape("reth_filter_maps_first_indexed_block 50\nreth_filter_maps_last_indexed_block 100\n")
+        for label, first, last in [("below", 40, 60), ("above", 90, 101)]:
+            with self.subTest(label=label), self.assertRaises(SystemExit):
+                run.check_window([("Q1-w500-000", 60, 70), (label, first, last)], snapshot)
