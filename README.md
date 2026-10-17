@@ -30,14 +30,16 @@ python3 -m fmbench <command> -h
 | `run` | `seq.jsonl` | G7 (`g7.jsonl`), G1 (`g1.jsonl`), D2 (`oneshot.jsonl`) |
 | `equal A B` | exit 1 on any difference | G1 |
 | `load` | `load.jsonl` | G8 |
-| `sweep` | `sweep.jsonl` | the backfill number |
+| `sweep` | `sweep.jsonl` | the backfill number, over the query file's window by default |
 | `watch` | `watch.csv`, `blocks.csv` | build rate, G3 lag, G4 |
 | `cold` | — | `--dry-run` prints the steps |
 | `report DIR` | `report.md` and the chart CSVs | every gate |
 
 Each result goes to `results/<commit>/<run-id>/` with a `meta.json` (binary, commit, flags,
 mode, cache state, kernel, filesystem, CPU, RAM, query file hash). `report` reads one
-`results/<commit>/` and uses the latest finished run of each kind.
+`results/<commit>/` and uses the latest finished run of each kind. The Reth 2.7.0 runs (mode
+`today`) land under that binary's commit: pass `--today results/<2.7.0 commit>/` to fill the
+today columns.
 
 ## Box gates (bench-kit spec, B2 step 0)
 
@@ -61,4 +63,14 @@ python3 -m fmbench report results/<commit>/
 
 The G7 matrix: `run --queries queries/g7.jsonl` in each mode, `--cache warm --reps 25` and
 `--cache cold --reps 5`, plus one `--spread` repeat per mode and cache state for the run-to-run
-spread. The one-shot: `run --queries queries/oneshot.jsonl --reps 1` per mode, before the matrix.
+spread (same file, `--limit` and `--reps` as the run it repeats). The one-shot:
+`run --queries queries/oneshot.jsonl --reps 1` per mode, before the matrix.
+
+G4: `watch --phase off` (bloom mode) is the catch-up's reference, and `watch --phase load` runs
+during the G8 load in both modes: the bloom-mode one is the reference of the index-mode one.
+
+`sweep` covers the query file's window by default, not the whole indexed window: the window
+starts `--tail-margin` blocks above the first indexed block, so both modes sweep the same range
+while the index tail moves. Q6 and Q7 (the wildcard, which stays under the result cap only
+over a few blocks) run at 1, 10 and 100 blocks; the header of each query file lists the queries
+the cap dropped (`dropped_by_cap`).

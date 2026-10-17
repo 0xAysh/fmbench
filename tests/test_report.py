@@ -8,7 +8,12 @@ with open(os.path.join(os.path.dirname(__file__), "..", "gates.json")) as file:
     GATES = json.load(file)
 
 
-def seq(query_id, latencies, digest="d", error_rep=None):
+HEADERS = "reth_rpc_eth_filter_headers_read_total"
+WINDOWS = "reth_rpc_eth_filter_windows_total"
+FALLBACKS = "reth_rpc_eth_filter_fallbacks_total"
+
+
+def seq(query_id, latencies, digest="d", error_rep=None, counters=None):
     """`seq.jsonl` lines of one query, one per latency."""
     return [
         {
@@ -18,7 +23,7 @@ def seq(query_id, latencies, digest="d", error_rep=None):
             "logs": None if rep == error_rep else 1,
             "digest": None if rep == error_rep else digest,
             "error": "timeout" if rep == error_rep else None,
-            "counters": {"reth_rpc_eth_filter_headers_read_total": {"index": 2, "bloom": 0}},
+            "counters": counters or {HEADERS: {"index": 2, "bloom": 0}},
         }
         for rep, latency in enumerate(latencies)
     ]
@@ -58,6 +63,25 @@ class G7Test(unittest.TestCase):
         )
         self.assertEqual(rows[0]["verdict"], "not measured")
 
+    def test_an_index_request_the_header_bloom_served_in_part_is_not_index_latency(self):
+        mixed = {WINDOWS: {"index": 3, "bloom": 1}, FALLBACKS: {"": 0}}
+        failed = {WINDOWS: {"index": 0, "bloom": 4}, FALLBACKS: {"": 1}}
+        index = seq("Q1-w500-000", [10, 10], counters=mixed) + seq("Q2-w500-000", [10, 10], counters=failed)
+        bloom = seq("Q1-w500-000", [90, 90]) + seq("Q2-w500-000", [90, 90])
+        rows = report.g7_rows(report.cells(index), report.cells(bloom), {}, GATES)
+        self.assertEqual([r["verdict"] for r in rows], ["not measured", "not measured"])
+
+    def test_the_wildcard_is_served_by_the_header_bloom_on_both_paths(self):
+        wildcard = {WINDOWS: {"index": 0, "bloom": 1}, FALLBACKS: {"": 0}}
+        rows = report.g7_rows(
+            report.cells(seq("Q7-w100-000", [50, 50], counters=wildcard)), report.cells(seq("Q7-w100-000", [50, 50])), {}, GATES
+        )
+        self.assertEqual(rows[0]["verdict"], "pass")
+
+    def test_lists_the_classes_without_a_cell(self):
+        rows = report.g7_rows(report.cells(seq("Q1-w500-000", [10])), report.cells(seq("Q1-w500-000", [90])), {}, GATES)
+        self.assertEqual(report.missing_classes(rows, GATES), ["Q2", "Q3", "Q4", "Q5", "Q6", "Q7", "Q8", "Q9"])
+
 
 class SpreadTest(unittest.TestCase):
     def test_is_the_relative_p50_and_p90_difference_of_two_runs_or_the_floor(self):
@@ -68,6 +92,17 @@ class SpreadTest(unittest.TestCase):
         self.assertAlmostEqual(spreads[("Q1", 500)][0], 0.10)
         self.assertAlmostEqual(spreads[("Q1", 500)][1], 0.10)
         self.assertEqual(report.spreads(a, b, floor=0.05)[("Q3", 500)], (0.05, 0.05))
+
+    def test_pairs_the_spread_run_with_a_run_of_the_same_queries_and_repetitions(self):
+        def found(started, spread=False, used=100, reps=25):
+            meta = {"command": "run", "mode": "index", "cache": "warm", "kind": "g7", "ended": "x", "started": started,
+                    "spread": spread, "queries": {"sha256": "a"}, "queries_used": used, "reps": reps}
+            return {"dir": started, "meta": meta}
+
+        base, repeat = found("1"), found("4", spread=True)
+        runs = [base, found("2", used=20), found("3", reps=1), repeat]
+        self.assertEqual(report.spread_pair(runs, "index", "warm"), (base, repeat))
+        self.assertIsNone(report.spread_pair([found("2", used=20), repeat], "index", "warm"))
 
     def test_a_ratio_inside_a_wider_spread_is_equal(self):
         self.assertEqual(report.g7_verdict("selective", 500, 0.93, 0.93, 0.08, 0.08, GATES), "equal")
@@ -80,6 +115,11 @@ class WideRuleTest(unittest.TestCase):
         self.assertEqual(report.g7_verdict("selective", 100_000, 0.6, 0.6, 0.05, 0.05, GATES), "fail")
         self.assertEqual(report.g7_verdict("selective", 100_000, 0.45, 0.7, 0.05, 0.05, GATES), "pass")
         self.assertEqual(report.g7_verdict("selective", "window", 0.6, 0.6, 0.05, 0.05, GATES), "fail")
+
+    def test_each_ratio_is_judged_on_its_own(self):
+        # p50 inside the spread (equal), p90 clearly lower (pass): equal, not a fail.
+        self.assertEqual(report.g7_verdict("selective", 500, 1.03, 0.70, 0.05, 0.05, GATES), "equal")
+        self.assertEqual(report.g7_verdict("selective", 500, 1.03, 1.20, 0.05, 0.05, GATES), "fail")
 
     def test_dense_and_equal_rules(self):
         self.assertEqual(report.g7_verdict("dense", 100_000, 1.08, 2.0, 0.05, 0.05, GATES), "pass")
@@ -111,6 +151,14 @@ class G8Test(unittest.TestCase):
         self.assertEqual(report.g8_verdict(load_summary(12, 80), load_summary(10, 100, {"ok": 90, "timeout": 1}), GATES), "not measured")
         self.assertEqual(report.g8_verdict(None, load_summary(10, 100), GATES), "not measured")
 
+    def test_each_ratio_is_judged_on_its_own(self):
+        # QPS inside the floor (equal), p99 halved (pass): equal, not a fail.
+        self.assertEqual(report.g8_verdict(load_summary(9.8, 50), load_summary(10, 100), GATES), "equal")
+
+    def test_no_bloom_answer_or_no_latency_is_not_measured(self):
+        self.assertEqual(report.g8_verdict(load_summary(5, 80), load_summary(0, 100), GATES), "not measured")
+        self.assertEqual(report.g8_verdict(load_summary(5, None), load_summary(5, 100), GATES), "not measured")
+
 
 class G4Test(unittest.TestCase):
     def test_block_p50_and_p99_may_grow_by_at_most_5_percent(self):
@@ -122,3 +170,35 @@ class G4Test(unittest.TestCase):
         self.assertEqual(report.g4_verdict(reference, [11.0] * 95 + [50.0] * 5, GATES)[2], "fail")
         self.assertEqual(report.g4_verdict(reference, [10.0] * 95 + [60.0] * 5, GATES)[2], "fail")
         self.assertEqual(report.g4_verdict([], [10.0], GATES)[2], "not measured")
+
+
+    def test_load_is_compared_with_the_same_load_with_the_index_off(self):
+        idle, loaded = [10.0] * 100, [20.0] * 100
+        rows = report.g4_rows({("off", "bloom"): idle, ("catchup", "index"): [10.2] * 100, ("load", "bloom"): loaded, ("load", "index"): [20.4] * 100}, GATES)
+        self.assertEqual([(r[0], r[1], r[-1]) for r in rows], [
+            ("off", "bloom", "reference"), ("catchup", "index", "pass"), ("load", "bloom", "reference"), ("load", "index", "pass"),
+        ])
+        rows = report.g4_rows({("off", "bloom"): idle, ("catchup", "index"): [10.2] * 100, ("load", "bloom"): [], ("load", "index"): [20.4] * 100}, GATES)
+        self.assertEqual(rows[-1][-1], "not measured")
+
+
+def summary(run, completed=True, total_ms=1000.0, blocks_per_s=100.0, requests_per_s=2.0):
+    return {"run": run, "completed": completed, "total_ms": total_ms, "blocks_per_s": blocks_per_s, "requests_per_s": requests_per_s}
+
+
+class SweepMeanTest(unittest.TestCase):
+    def test_is_the_mean_of_the_completed_runs(self):
+        means = report.sweep_mean([summary(1), summary(2, total_ms=3000.0, blocks_per_s=50.0, requests_per_s=1.0), summary(3, False, 10.0, None, None)])
+        self.assertEqual(means, {"total_ms": 2000.0, "blocks_per_s": 75.0, "requests_per_s": 1.5})
+
+    def test_needs_two_completed_runs(self):
+        self.assertIsNone(report.sweep_mean([summary(1), summary(2, completed=False)]))
+
+
+class FellBackTest(unittest.TestCase):
+    def test_a_failed_lookup_or_a_range_served_in_part_by_the_bloom(self):
+        self.assertFalse(report.fell_back({WINDOWS: {"index": 3, "bloom": 0}, FALLBACKS: {"": 0}}))
+        self.assertFalse(report.fell_back({WINDOWS: {"index": 0, "bloom": 2}, FALLBACKS: {"": 0}}))
+        self.assertFalse(report.fell_back({}))
+        self.assertTrue(report.fell_back({WINDOWS: {"index": 3, "bloom": 1}, FALLBACKS: {"": 0}}))
+        self.assertTrue(report.fell_back({WINDOWS: {"index": 0, "bloom": 2}, FALLBACKS: {"": 1}}))

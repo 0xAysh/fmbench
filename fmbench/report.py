@@ -14,14 +14,24 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from fmbench import equal, prom, rpc, run, sample, stats
+from fmbench import equal, load, meta, prom, rpc, run, sample, stats
 
 PASS, FAIL, EQUAL, NOT_MEASURED = "pass", "fail", "equal", "not measured"
 # The verdict of a set of cells is the worst one.
 SEVERITY = (FAIL, NOT_MEASURED, EQUAL, PASS)
+# The verdict of a G4 row that the others are measured against.
+REFERENCE = "reference"
 DEFAULT_GATES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gates.json")
 # The counters the tables show per mode, as mean per request over both paths.
 WORK = ("headers_read", "receipt_sets_read", "matching_blocks", "logs")
+# The G4 rows: the `watch` phase and mode of each, and the phase and mode of its reference. A load
+# is compared with the same load with the index off, not with an idle node.
+G4_PHASES: tuple[tuple[str, str, tuple[str, str] | None], ...] = (
+    ("off", "bloom", None),
+    ("catchup", "index", ("off", "bloom")),
+    ("load", "bloom", None),
+    ("load", "index", ("load", "bloom")),
+)
 
 Cells = dict[tuple[str, sample.Width], "Cell"]
 
@@ -38,11 +48,12 @@ class Cell:
     counters: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def p(self, q: float) -> float | None:
+        """Returns the `q`-quantile of the answered requests' latencies, or `None` for none."""
         return stats.percentile(self.latencies, q)
 
     def work(self, name: str) -> float | None:
         """Returns the mean per request of `reth_rpc_eth_filter_<name>_total` over both paths."""
-        paths = self.counters.get(f"reth_rpc_eth_filter_{name}_total")
+        paths = self.counters.get(f"{prom.RPC_FILTER_PREFIX}{name}_total")
         return sum(paths.values()) / self.requests if paths and self.requests else None
 
 
@@ -68,15 +79,40 @@ def spreads(a: Cells, b: Cells, floor: float) -> dict[tuple[str, sample.Width], 
     out = {}
     for key in a.keys() & b.keys():
         x, y = a[key], b[key]
-        if x.errors or y.errors or not x.latencies or not y.latencies:
+        if x.errors or y.errors:
             continue
-        out[key] = (max(floor, _relative(x.p(0.5), y.p(0.5))), max(floor, _relative(x.p(0.9), y.p(0.9))))
+        s50, s90 = _relative(x.p(0.5), y.p(0.5)), _relative(x.p(0.9), y.p(0.9))
+        if s50 is not None and s90 is not None:
+            out[key] = (max(floor, s50), max(floor, s90))
     return out
 
 
-def _relative(x: float | None, y: float | None) -> float:
-    assert x is not None and y is not None
+def _relative(x: float | None, y: float | None) -> float | None:
+    """Returns |x − y| over the smaller of the two, or `None` without two positive values."""
+    if x is None or y is None or min(x, y) <= 0:
+        return None
     return abs(x - y) / min(x, y)
+
+
+def spread_pair(runs: list[dict[str, Any]], mode: str, cache: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Returns the latest g7 run of `mode` and `cache` that the latest spread run repeats (the
+    same query file, query count and repetitions) and that spread run, or `None`."""
+    repeat = pick(runs, "run", mode, cache, spread=True, kind="g7")
+    if repeat is None:
+        return None
+    same = {key: repeat["meta"][key] for key in ("queries", "queries_used", "reps")}
+    base = pick(runs, "run", mode, cache, kind="g7", **same)
+    return (base, repeat) if base else None
+
+
+def fell_back(counters: dict[str, dict[str, float]]) -> bool:
+    """Whether the index did not serve all of an index-mode request: a lookup failed (`fallbacks`),
+    or the index served part of the range and the header bloom the rest (the window's tail moved
+    under the query). A filter without an address or topic is never looked up, so all its windows
+    are bloom windows by design."""
+    windows = counters.get(prom.RPC_FILTER_PREFIX + "windows_total", {})
+    fallbacks = sum(counters.get(prom.RPC_FILTER_PREFIX + "fallbacks_total", {}).values())
+    return fallbacks > 0 or (windows.get("index", 0) > 0 and windows.get("bloom", 0) > 0)
 
 
 def d2_check(index_ms: float | None, index_error: Any, bloom_p50_ms: float | None) -> str:
@@ -89,37 +125,59 @@ def d2_check(index_ms: float | None, index_error: Any, bloom_p50_ms: float | Non
     return PASS if index_ms <= bloom_p50_ms else FAIL
 
 
+def _outcome(ratio: float, spread: float, limit: float, higher_is_better: bool = False) -> str:
+    """Judges one index/bloom ratio: `equal` inside the spread around 1, else `pass` or `fail`
+    against its limit."""
+    if abs(ratio - 1) <= spread:
+        return EQUAL
+    return PASS if (ratio >= limit if higher_is_better else ratio <= limit) else FAIL
+
+
+def _combine(outcomes: list[str]) -> str:
+    """Returns the verdict of a cell from its ratios: `fail` if one fails, `pass` if all pass,
+    else `equal`."""
+    if FAIL in outcomes:
+        return FAIL
+    return PASS if all(outcome == PASS for outcome in outcomes) else EQUAL
+
+
 def g8_verdict(index: dict[str, Any] | None, bloom: dict[str, Any] | None, gates: dict[str, Any]) -> str:
     """G8 at one client count: index QPS at least the bloom QPS and index p99 at most the bloom
-    p99. A flagged client, any non-`ok` request or a missing run is `not measured`."""
+    p99, each ratio judged on its own against the spread floor. A flagged client, any non-`ok`
+    request, a missing run, no bloom answer or no latency is `not measured`."""
     if index is None or bloom is None:
         return NOT_MEASURED
     if any(s["client_cpu_flag"] or set(s["statuses"]) - {"ok"} for s in (index, bloom)):
         return NOT_MEASURED
+    qps = _ratio(index["qps"], bloom["qps"])
+    p99 = _ratio(index["latency_ms"]["all"]["p99"], bloom["latency_ms"]["all"]["p99"])
+    if qps is None or p99 is None:
+        return NOT_MEASURED
     rule, floor = gates["g8"], gates["spread_floor"]
-    qps = index["qps"] / bloom["qps"]
-    p99 = index["latency_ms"]["all"]["p99"] / bloom["latency_ms"]["all"]["p99"]
-    if abs(qps - 1) <= floor and abs(p99 - 1) <= floor:
-        return EQUAL
-    return PASS if qps >= rule["qps_ratio_min"] and p99 <= rule["p99_ratio_max"] else FAIL
+    return _combine([_outcome(qps, floor, rule["qps_ratio_min"], higher_is_better=True), _outcome(p99, floor, rule["p99_ratio_max"])])
 
 
 def g4_verdict(reference_ms: list[float], measured_ms: list[float], gates: dict[str, Any]) -> tuple[float | None, float | None, str]:
-    """G4: block-time p50 and p99 at most 1.05 × the index-off reference, or within the spread,
-    whichever is larger. Returns both ratios and the verdict."""
-    if not reference_ms or not measured_ms:
+    """G4: block-time p50 and p99 at most 1.05 × the reference, or within the spread, whichever
+    is larger. Returns both ratios and the verdict; no blocks on either side is `not measured`."""
+    r50 = _ratio(stats.percentile(measured_ms, 0.5), stats.percentile(reference_ms, 0.5))
+    r99 = _ratio(stats.percentile(measured_ms, 0.99), stats.percentile(reference_ms, 0.99))
+    if r50 is None or r99 is None:
         return None, None, NOT_MEASURED
-    r50 = _relative_to(measured_ms, reference_ms, 0.5)
-    r99 = _relative_to(measured_ms, reference_ms, 0.99)
     rule, floor = gates["g4"], gates["spread_floor"]
     ok = r50 <= max(rule["p50_ratio_max"], 1 + floor) and r99 <= max(rule["p99_ratio_max"], 1 + floor)
     return r50, r99, PASS if ok else FAIL
 
 
-def _relative_to(measured: list[float], reference: list[float], q: float) -> float:
-    value, base = stats.percentile(measured, q), stats.percentile(reference, q)
-    assert value is not None and base is not None
-    return value / base
+def g4_rows(block_ms: dict[tuple[str, str], list[float]], gates: dict[str, Any]) -> list[list[Any]]:
+    """Returns one G4 row per `G4_PHASES` entry from the block times (ms) of each `watch` phase
+    and mode: phase, mode, blocks, p50, p99, both ratios to its reference and the verdict."""
+    rows = []
+    for phase, mode, reference in G4_PHASES:
+        values = block_ms.get((phase, mode), [])
+        r50, r99, verdict = g4_verdict(block_ms.get(reference, []), values, gates) if reference else (None, None, REFERENCE)
+        rows.append([phase, mode, len(values), _ms(stats.percentile(values, 0.5)), _ms(stats.percentile(values, 0.99)), _num(r50, 3), _num(r99, 3), verdict])
+    return rows
 
 
 def class_type(cls: str, gates: dict[str, Any]) -> str | None:
@@ -129,20 +187,19 @@ def class_type(cls: str, gates: dict[str, Any]) -> str | None:
 
 def g7_verdict(kind: str, width: sample.Width, r50: float, r90: float, s50: float, s90: float, gates: dict[str, Any]) -> str:
     """Applies the G7 rule of a class type to the index/bloom ratios of p50 and p90, given the
-    cell's spread of each. A difference inside the spread is `equal`, never a fail; for the equal
-    classes (Q6, Q7) that is the pass condition. Dense classes check p50 only."""
+    cell's spread of each. Each ratio is judged on its own: inside its spread it is `equal`, never
+    a fail; outside it, it passes or fails against its limit. The cell fails if a ratio fails,
+    passes if all pass, and is `equal` otherwise. For the equal classes (Q6, Q7) both ratios
+    inside the spread is the pass condition. Dense classes check p50 only."""
     rule = gates["g7"][kind]
-    inside = abs(r50 - 1) <= s50 and (kind == "dense" or abs(r90 - 1) <= s90)
     if kind == "equal":
-        return PASS if inside else FAIL
-    if inside:
-        return EQUAL
+        return PASS if abs(r50 - 1) <= s50 and abs(r90 - 1) <= s90 else FAIL
     if kind == "dense":
-        return PASS if r50 <= rule["p50_ratio_max"] else FAIL
-    ok = r50 <= rule["p50_ratio_max"] and r90 <= rule["p90_ratio_max"]
+        return _outcome(r50, s50, rule["p50_ratio_max"])
+    p50_max = rule["p50_ratio_max"]
     if width == sample.WINDOW or (isinstance(width, int) and width >= rule["wide_width_min"]):
-        ok = ok and r50 <= rule["wide_p50_ratio_max"]
-    return PASS if ok else FAIL
+        p50_max = min(p50_max, rule["wide_p50_ratio_max"])
+    return _combine([_outcome(r50, s50, p50_max), _outcome(r90, s90, rule["p90_ratio_max"])])
 
 
 def g7_rows(
@@ -171,14 +228,35 @@ def g7_rows(
             row["verdict"], row["note"] = NOT_MEASURED, "missing on a path" if kind else "no G7 rule"
         elif a.errors or b.errors:
             row["verdict"], row["note"] = NOT_MEASURED, f"errors: index {a.errors}, bloom {b.errors}"
+        elif fell_back(a.counters):
+            row["verdict"], row["note"] = NOT_MEASURED, "the index path fell back to the header bloom"
         elif a.digests != b.digests:
             row["verdict"], row["note"] = NOT_MEASURED, "results differ between the paths (G1)"
         else:
             row["p50_ratio"] = _ratio(a.p(0.5), b.p(0.5))
             row["p90_ratio"] = _ratio(a.p(0.9), b.p(0.9))
-            row["verdict"] = g7_verdict(kind, width, row["p50_ratio"], row["p90_ratio"], s50, s90, gates)
+            if row["p50_ratio"] is None or row["p90_ratio"] is None:
+                row["verdict"], row["note"] = NOT_MEASURED, "no latency"
+            else:
+                row["verdict"] = g7_verdict(kind, width, row["p50_ratio"], row["p90_ratio"], s50, s90, gates)
         rows.append(row)
     return rows
+
+
+def missing_classes(rows: list[dict[str, Any]], gates: dict[str, Any]) -> list[str]:
+    """Returns the classes with a G7 rule but no row: not sampled, or above the result cap at
+    every width."""
+    present = {row["class"] for row in rows}
+    return sorted(cls for rule in gates["g7"].values() for cls in rule["classes"] if cls not in present)
+
+
+def sweep_mean(summaries: list[dict[str, Any]]) -> dict[str, float] | None:
+    """Returns the mean total time, blocks/s and requests/s over the completed runs of one sweep,
+    or `None` with fewer than two."""
+    completed = [s for s in summaries if s["completed"]]
+    if len(completed) < 2:
+        return None
+    return {key: sum(s[key] for s in completed) / len(completed) for key in ("total_ms", "blocks_per_s", "requests_per_s")}
 
 
 def _cell_order(key: tuple[str, sample.Width]) -> tuple[str, int]:
@@ -221,23 +299,25 @@ def pick(runs: list[dict[str, Any]], command: str, mode: str, cache: str = "warm
     return max(found, key=lambda r: r["meta"]["started"]) if found else None
 
 
-def read_jsonl(path: str) -> list[dict[str, Any]]:
-    with open(path) as file:
-        return [json.loads(line) for line in file if line.strip()]
-
-
 def read_csv(path: str) -> list[dict[str, str]]:
+    """Reads a CSV file written by `watch` into one dict per row."""
     with open(path, newline="") as file:
         return list(csv.DictReader(file))
 
 
 def seq_cells(found: dict[str, Any] | None) -> Cells | None:
-    return cells(read_jsonl(os.path.join(found["dir"], "seq.jsonl"))) if found else None
+    """Returns the cells of a run's `seq.jsonl`, or `None` for no run."""
+    return cells(meta.read_jsonl(os.path.join(found["dir"], "seq.jsonl"))) if found else None
 
 
-def build(root: str, gates: dict[str, Any]) -> tuple[str, dict[str, list[list[Any]]]]:
-    """Returns `report.md` and the chart CSVs (name → rows, header first) of one commit."""
-    report = _Report(load_runs(root), gates, os.path.basename(os.path.normpath(root)))
+def build(root: str, gates: dict[str, Any], today: str | None = None) -> tuple[str, dict[str, list[list[Any]]]]:
+    """Returns `report.md` and the chart CSVs (name → rows, header first) of one commit. `today`
+    is the results directory of the Reth 2.7.0 commit (run C), whose `today` runs fill the today
+    columns."""
+    runs = load_runs(root)
+    if today is not None:
+        runs += [r for r in load_runs(today) if r["meta"]["mode"] == "today"]
+    report = _Report(runs, gates, os.path.basename(os.path.normpath(root)), today)
     for section in (report.g7, report.g8, report.g1, report.g4, report.sweeps, report.oneshot, report.index_build, report.summary):
         section()
     return "\n".join(report.md) + "\n", report.charts
@@ -246,10 +326,11 @@ def build(root: str, gates: dict[str, Any]) -> tuple[str, dict[str, list[list[An
 class _Report:
     """The sections of one commit's report, written in order into `md` and `charts`."""
 
-    def __init__(self, runs: list[dict[str, Any]], gates: dict[str, Any], commit: str) -> None:
+    def __init__(self, runs: list[dict[str, Any]], gates: dict[str, Any], commit: str, today: str | None) -> None:
         self.runs, self.gates, self.commit = runs, gates, commit
         self.floor = gates["spread_floor"]
-        self.md = [f"# FilterMaps bench report: commit {commit}", "", f"Gates: `gates.json`, spread floor {self.floor:.0%}.", ""]
+        today_source = f"the `today` runs in `{today}`" if today else "none (pass `--today results/<2.7.0 commit>/`)"
+        self.md = [f"# FilterMaps bench report: commit {commit}", "", f"Gates: `gates.json`, spread floor {self.floor:.0%}. Reth 2.7.0 (today): {today_source}.", ""]
         self.charts: dict[str, list[list[Any]]] = {
             "latency_vs_width.csv": [["class", "width", "mode", "cache", "p50_ms", "p90_ms"]],
             "work_vs_width.csv": [["class", "width", "mode", "headers_read", "receipt_sets_read"]],
@@ -263,24 +344,26 @@ class _Report:
         self.md += [f"## {title} (commit {self.commit})", ""]
 
     def spread(self, cache: str) -> dict[tuple[str, sample.Width], tuple[float, float]]:
-        """The per-cell spread of one cache state (D4): each spread run against the run of the same
-        query file, mode and cache state, the larger of the two modes."""
+        """The per-cell spread of one cache state (D4): each spread run against the run it
+        repeats, the larger of the two modes."""
         merged: dict[tuple[str, sample.Width], tuple[float, float]] = {}
         sources = []
         for mode in ("index", "bloom"):
-            repeat = pick(self.runs, "run", mode, cache, spread=True, kind="g7")
-            base = repeat and pick(self.runs, "run", mode, cache, kind="g7", queries=repeat["meta"]["queries"])
-            if repeat and base:
-                sources.append(mode)
-                for key, (s50, s90) in spreads(seq_cells(base) or {}, seq_cells(repeat) or {}, self.floor).items():
-                    old = merged.get(key, (0.0, 0.0))
-                    merged[key] = (max(old[0], s50), max(old[1], s90))
+            pair = spread_pair(self.runs, mode, cache)
+            if pair is None:
+                continue
+            sources.append(mode)
+            base, repeat = pair
+            for key, (s50, s90) in spreads(seq_cells(base) or {}, seq_cells(repeat) or {}, self.floor).items():
+                old = merged.get(key, (0.0, 0.0))
+                merged[key] = (max(old[0], s50), max(old[1], s90))
         source = f"measured from the {' and '.join(sources)} spread runs" if sources else f"no spread run, so the floor ({self.floor:.0%}) applies to every cell"
         self.md += [f"Spread: {source}.", ""]
         return merged
 
     def g7(self) -> None:
         verdicts = []
+        all_rows = []
         for cache in ("warm", "cold"):
             index, bloom = (seq_cells(pick(self.runs, "run", mode, cache, kind="g7")) for mode in ("index", "bloom"))
             if index is None and bloom is None:
@@ -288,6 +371,7 @@ class _Report:
             self.heading(f"G7 single-query latency, {cache}")
             rows = g7_rows(index or {}, bloom or {}, self.spread(cache), self.gates, seq_cells(pick(self.runs, "run", "today", cache, kind="g7")))
             verdicts += [row["verdict"] for row in rows]
+            all_rows += rows
             self.md += _table(
                 ["class", "width", "index p50", "index p90", "bloom p50", "bloom p90", "today p50", "p50 ratio", "p90 ratio", "spread p50/p90",
                  "index headers", "index receipts", "bloom headers", "bloom receipts", "matching blocks", "logs", "verdict", "note"],
@@ -303,13 +387,16 @@ class _Report:
                         self.charts["latency_vs_width.csv"].append([r["class"], r["width"], mode, cache, r[f"{mode}_p50"], r[f"{mode}_p90"]])
                         if cache == "warm":
                             self.charts["work_vs_width.csv"].append([r["class"], r["width"], mode, r[f"{mode}_headers_read"], r[f"{mode}_receipt_sets_read"]])
+        missing = missing_classes(all_rows, self.gates)
+        if all_rows and missing:
+            self.md += [f"Classes without a G7 cell: {', '.join(missing)} (not sampled, or above the result cap at every width: `dropped_by_cap` in the query file).", ""]
         self.verdicts["G7"] = worst(verdicts)
 
     def g8(self) -> None:
         summaries: dict[str, dict[int, dict[str, Any]]] = {}
         for mode in ("index", "bloom", "today"):
             found = pick(self.runs, "load", mode)
-            lines = read_jsonl(os.path.join(found["dir"], "load.jsonl")) if found else []
+            lines = meta.read_jsonl(os.path.join(found["dir"], "load.jsonl")) if found else []
             summaries[mode] = {line["clients"]: line for line in lines if line.get("summary")}
             for clients, line in sorted(summaries[mode].items()):
                 latency = line["latency_ms"]["all"]
@@ -323,7 +410,7 @@ class _Report:
         self.verdicts["G8"] = worst([row[-1] for row in rows])
         self.heading("G8 throughput, heavy mix")
         self.md += _table(["clients", "index QPS", "bloom QPS", "index p99 ms", "bloom p99 ms", "QPS ratio", "p99 ratio", "verdict"], rows)
-        self.md += ["A flagged client (above 80 % of a core) or any request that was not `ok` makes a row `not measured`. G8 also needs G4 under load.", ""]
+        self.md += [f"A flagged client (above {load.CPU_FLAG:.0%} of a core) or any request that was not `ok` makes a row `not measured`. G8 also needs G4 under load.", ""]
 
     def g1(self) -> None:
         self.heading("G1 correctness")
@@ -344,35 +431,34 @@ class _Report:
 
     def g4(self) -> None:
         block_ms = {}
-        for phase, mode in (("off", "bloom"), ("catchup", "index"), ("load", "index")):
+        for phase, mode, _ in G4_PHASES:
             found = pick(self.runs, "watch", mode, phase=phase)
-            block_ms[phase] = [float(row["elapsed_ms"]) for row in read_csv(os.path.join(found["dir"], "blocks.csv"))] if found else []
-        rows: list[list[Any]] = []
-        for phase, values in block_ms.items():
-            r50, r99, verdict = g4_verdict(block_ms["off"], values, self.gates) if phase != "off" else (None, None, "reference")
-            rows.append([phase, len(values), _ms(stats.percentile(values, 0.5)), _ms(stats.percentile(values, 0.99)), _num(r50, 3), _num(r99, 3), verdict])
-        self.verdicts["G4"] = worst([row[-1] for row in rows[1:]])
+            block_ms[(phase, mode)] = [float(row["elapsed_ms"]) for row in read_csv(os.path.join(found["dir"], "blocks.csv"))] if found else []
+        rows = g4_rows(block_ms, self.gates)
+        self.verdicts["G4"] = worst([row[-1] for row in rows if row[-1] != REFERENCE])
         self.heading("G4 node cost: block execution time")
-        self.md += _table(["phase", "blocks", "p50 ms", "p99 ms", "p50 ratio", "p99 ratio", "verdict"], rows)
+        self.md += _table(["phase", "mode", "blocks", "p50 ms", "p99 ms", "p50 ratio", "p99 ratio", "verdict"], rows)
         limit = self.gates["g4"]["p50_ratio_max"]
-        self.md += [f"Ratios against the index-off reference; the limit is {limit} × or 1 + the spread floor, whichever is larger.", ""]
+        self.md += [f"The catch-up is measured against the index-off phase, the index-mode load against the same load in bloom mode. "
+                    f"The limit is {limit} × or 1 + the spread floor, whichever is larger.", ""]
 
     def sweeps(self) -> None:
         rows: list[list[Any]] = []
         found_runs = [r for r in self.runs if r["meta"]["command"] == "sweep" and r["meta"]["ended"]]
         for found in sorted(found_runs, key=lambda r: (r["meta"]["filter_id"], r["meta"]["chunk"], r["meta"]["mode"])):
             mode = found["meta"]["mode"]
-            lines = [line for line in read_jsonl(os.path.join(found["dir"], "sweep.jsonl")) if line.get("summary")]
+            lines = [line for line in meta.read_jsonl(os.path.join(found["dir"], "sweep.jsonl")) if line.get("summary")]
             for line in lines:
-                work = [sum(line["counters"].get(f"reth_rpc_eth_filter_{name}_total", {}).values()) for name in ("headers_read", "receipt_sets_read")]
+                work = [sum(line["counters"].get(f"{prom.RPC_FILTER_PREFIX}{name}_total", {}).values()) for name in ("headers_read", "receipt_sets_read")]
                 values: list[Any] = [line["filter_id"], line["chunk"], mode, line["run"], line["requests"], line["total_ms"] / 1000,
                                      line["blocks_per_s"], line["requests_per_s"], line["logs"], *work, line["completed"]]
                 self.charts["sweep.csv"].append(values)
                 rows.append(values)
-            if len(lines) > 1:
-                total_s, blocks_per_s, requests_per_s = (sum(line[k] or 0 for line in lines) / len(lines) for k in ("total_ms", "blocks_per_s", "requests_per_s"))
-                rows.append([lines[0]["filter_id"], lines[0]["chunk"], mode, "mean", lines[0]["requests"], total_s / 1000, blocks_per_s, requests_per_s,
-                             None, None, None, all(line["completed"] for line in lines)])
+            means = sweep_mean(lines)
+            if means:
+                completed = sum(line["completed"] for line in lines)
+                rows.append([lines[0]["filter_id"], lines[0]["chunk"], mode, f"mean of {completed} completed", lines[0]["planned_requests"],
+                             means["total_ms"] / 1000, means["blocks_per_s"], means["requests_per_s"], None, None, None, None])
         self.heading("Sweeps")
         self.md += _table(["filter", "chunk", "mode", "run", "requests", "total s", "blocks/s", "requests/s", "logs", "headers read", "receipt sets read", "completed"],
                           [[_num(v, 1) if isinstance(v, float) else v for v in row] for row in rows])
@@ -381,12 +467,17 @@ class _Report:
     def oneshot(self) -> None:
         self.heading("One-shot over the whole window (D2)")
         shots: dict[str, dict[str, tuple[dict[str, Any], float]]] = {}
+        window = None
         for mode in ("index", "bloom"):
             found = pick(self.runs, "run", mode, kind="oneshot")
             if found is None:
                 continue
-            for line in read_jsonl(os.path.join(found["dir"], "seq.jsonl")):
+            window = found["meta"].get("window") or window
+            for line in meta.read_jsonl(os.path.join(found["dir"], "seq.jsonl")):
                 shots.setdefault(line["query_id"], {})[mode] = (line, found["meta"]["timeout_s"])
+        if window:
+            self.md.append(f"Over the query file's window, {window[1] - window[0] + 1} blocks ({window[0]}..{window[1]}): "
+                           "the indexed window less the sample's tail margin.")
         for query_id, by_mode in sorted(shots.items()):
             parts = []
             for mode, (line, timeout_s) in sorted(by_mode.items()):
@@ -394,6 +485,8 @@ class _Report:
                     parts.append(f"{mode} > {timeout_s / 60:.0f} min")
                 else:
                     parts.append(f"{mode} " + (f"error {line['error']}" if line["error"] else f"{line['latency_ms']:.1f} ms"))
+                if mode == "index" and fell_back(line["counters"]):
+                    parts[-1] += " (fell back to the header bloom)"
             self.md.append(f"- {query_id}: {', '.join(parts)}")
         self.md.append("")
         q1_id = next((query_id for query_id in sorted(shots) if query_id.startswith("Q1-")), None)
@@ -403,10 +496,11 @@ class _Report:
         if found and q1_id:
             # The one-shot holds the first Q1 filter of g7.jsonl: the same filter index.
             reference = f"Q1-w{bloom_width}-{q1_id.split('-')[2]}"
-            lines = read_jsonl(os.path.join(found["dir"], "seq.jsonl"))
+            lines = meta.read_jsonl(os.path.join(found["dir"], "seq.jsonl"))
             bloom_p50 = stats.percentile([line["latency_ms"] for line in lines if line["query_id"] == reference and line["error"] is None], 0.5)
         index_line = shots.get(q1_id or "", {}).get("index", (None, None))[0]
-        self.verdicts["D2"] = d2_check(index_line["latency_ms"] if index_line else None, index_line["error"] if index_line else None, bloom_p50)
+        index_ms = index_line["latency_ms"] if index_line and not fell_back(index_line["counters"]) else None
+        self.verdicts["D2"] = d2_check(index_ms, index_line["error"] if index_line else None, bloom_p50)
         self.md += [f"D2: the index whole-window Q1 against the bloom p50 of the same filter at {bloom_width} blocks ({_ms(bloom_p50)} ms): "
                     f"**{self.verdicts['D2']}**. PR #11 T11 lands only on a pass.", ""]
 
@@ -457,6 +551,7 @@ def _float(text: str) -> float | None:
 def add_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser("report", help="tables, chart CSVs and gate verdicts of one commit's results")
     parser.add_argument("root", help="results/<commit>/")
+    parser.add_argument("--today", help="results/<commit>/ of the Reth 2.7.0 binary, whose today-mode runs fill the today columns")
     parser.add_argument("--gates", default=DEFAULT_GATES, help="the gate thresholds (default: the kit's gates.json)")
     parser.set_defaults(func=main)
 
@@ -464,7 +559,7 @@ def add_parser(subparsers: Any) -> None:
 def main(args: argparse.Namespace) -> int:
     with open(args.gates) as file:
         gates = json.load(file)
-    text, charts = build(args.root, gates)
+    text, charts = build(args.root, gates, args.today)
     with open(os.path.join(args.root, "report.md"), "w") as file:
         file.write(text)
     for name, rows in charts.items():
