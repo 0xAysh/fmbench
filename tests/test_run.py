@@ -108,3 +108,9 @@ class ResultLineTest(unittest.TestCase):
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "error": error}).encode()
         line = run.result_line("Q3-w100000-000", 0, rpc.Response(200, body, 80.0, None), {})
         self.assertEqual((line["error"], line["logs"], line["digest"]), (error, None, None))
+
+
+class CheckWindowTest(unittest.TestCase):
+    def test_a_full_history_index_starts_at_block_0(self):
+        snapshot = scrape("reth_filter_maps_first_indexed_block 0\nreth_filter_maps_last_indexed_block 100\n")
+        run.check_window([{"id": "Q1-w10-000", "filter": {"fromBlock": hex(5), "toBlock": hex(14)}}], snapshot)

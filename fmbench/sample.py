@@ -417,14 +417,13 @@ def add_parser(subparsers: Any) -> None:
 def main(args: argparse.Namespace) -> int:
     node = meta.node(args.unit, args.pid)
     meta.check_mode("index", node["cmdline"])
-    snapshot = prom.scrape(args.metrics)
-    first = snapshot.value("reth_filter_maps_first_indexed_block")
-    last = snapshot.value("reth_filter_maps_last_indexed_block")
-    if not first or not last:
+    indexed = prom.indexed_window(prom.scrape(args.metrics))
+    if indexed is None:
         raise SystemExit("the node reports no indexed window: run sample against the node in index mode once it is indexed")
-    window = (int(first) + args.tail_margin, int(last))
+    first, last = indexed
+    window = (first + args.tail_margin, last)
     if window[0] > window[1]:
-        raise SystemExit(f"the indexed window {int(first)}..{int(last)} is shorter than --tail-margin {args.tail_margin}")
+        raise SystemExit(f"the indexed window {first}..{last} is shorter than --tail-margin {args.tail_margin}")
     paths = {kind: os.path.join(args.out, f"{kind}.jsonl") for kind in ("g7", "g1", "oneshot")}
     existing = [path for path in paths.values() if os.path.exists(path)]
     if existing:
@@ -436,7 +435,7 @@ def main(args: argparse.Namespace) -> int:
     built = build(rpc.Client(args.rpc), window, args.seed, args.blocks, args.widths, args.count, args.max_logs, node["commit"], progress)
     os.makedirs(args.out, exist_ok=True)
     for kind, (header, queries) in built.items():
-        header["indexed_window"] = [int(first), int(last)]
+        header["indexed_window"] = [first, last]
         with open(paths[kind], "w") as file:
             file.write(format_queries(header, queries))
         print(f"{paths[kind]}: {len(queries)} queries")

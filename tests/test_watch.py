@@ -87,3 +87,9 @@ class DeriveTest(unittest.TestCase):
         self.assertEqual(
             {k for k, v in derived.items() if v is not None}, {"block_count", "block_p50_ms", "block_p99_ms"}
         )
+
+    def test_a_full_history_index_has_bytes_per_block(self):
+        cur = sample(10.0, 0, 0, 0.0, 0, 0.0, 0)
+        cur.series[FM + "first_indexed_block"] = 0
+        cur.series[FM + "last_indexed_block"] = 999
+        self.assertEqual(watch.derive(None, cur)["bytes_per_block"], 1_000_010.0)

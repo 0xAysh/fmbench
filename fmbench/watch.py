@@ -86,7 +86,7 @@ def derive(prev: Sample | None, cur: Sample) -> dict[str, float | None]:
     series = cur.series.get
     first, last = series(fm + "first_indexed_block"), series(fm + "last_indexed_block")
     target, rendered, maps = series(fm + "store_target"), series(fm + "blocks_rendered"), series(fm + "maps_written")
-    indexed = last - first + 1 if first and last else None
+    indexed = last - first + 1 if first is not None and last else None
     blocks_per_map = rendered / maps if rendered and maps else None
     block_ms = [ns / 1e6 for ns in cur.block_ns]
     return {

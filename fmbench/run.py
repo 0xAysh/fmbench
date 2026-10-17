@@ -113,10 +113,10 @@ def measure(client: rpc.Client, metrics_url: str, query_id: str, rep: int, filte
 def check_window(queries: list[dict[str, Any]], snapshot: prom.Snapshot) -> None:
     """Refuses, in index mode, a query outside the indexed window: above the index head the node
     has no maps, and below the first indexed block the bloom path would serve part of it."""
-    first = snapshot.value("reth_filter_maps_first_indexed_block")
-    last = snapshot.value("reth_filter_maps_last_indexed_block")
-    if not first or not last:
+    window = prom.indexed_window(snapshot)
+    if window is None:
         raise SystemExit("the node reports no indexed window (reth_filter_maps_*_indexed_block)")
+    first, last = window
     outside = [
         q["id"]
         for q in queries
@@ -124,7 +124,7 @@ def check_window(queries: list[dict[str, Any]], snapshot: prom.Snapshot) -> None
     ]
     if outside:
         raise SystemExit(
-            f"{len(outside)} queries leave the indexed window {int(first)}..{int(last)} (first: {outside[0]}); "
+            f"{len(outside)} queries leave the indexed window {first}..{last} (first: {outside[0]}); "
             "a query above the head has no maps, and below the first indexed block (the tail moves up as the "
             "chain grows) the bloom path serves part of it. Sample again with a larger --tail-margin"
         )

@@ -64,6 +64,17 @@ def delta(before: dict[Key, float], after: dict[Key, float]) -> dict[Key, float]
     return {key: value - before.get(key, 0) for key, value in after.items()}
 
 
+def indexed_window(snapshot: Snapshot) -> tuple[int, int] | None:
+    """Returns the first and last block of the FilterMaps index, or `None` when the node has none:
+    the gauges are missing (the index is off) or the last one is 0 (no block indexed yet). The
+    first one is 0 for an index of the whole history."""
+    first = snapshot.value(FILTER_MAPS_PREFIX + "first_indexed_block")
+    last = snapshot.value(FILTER_MAPS_PREFIX + "last_indexed_block")
+    if first is None or not last:
+        return None
+    return int(first), int(last)
+
+
 def scrape(url: str, timeout_s: float = 30) -> Snapshot:
     """Fetches and parses `url` (the node's `--metrics` endpoint)."""
     with urllib.request.urlopen(url, timeout=timeout_s) as response:
@@ -120,5 +131,4 @@ def _parse_value(text: str) -> float:
         return math.inf
     if text == "-Inf":
         return -math.inf
-    value = float(text)
-    return int(value) if value.is_integer() and "." not in text and "e" not in text.lower() else value
+    return float(text)

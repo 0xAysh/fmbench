@@ -66,3 +66,16 @@ class DeltaTest(unittest.TestCase):
             prom.delta(before, after),
             {index: 7, bloom: 0, ("reth_rpc_eth_filter_fallbacks_total", frozenset()): 1},
         )
+
+
+class IndexedWindowTest(unittest.TestCase):
+    def window(self, text):
+        return prom.indexed_window(prom.parse(text))
+
+    def test_reads_the_first_and_last_indexed_block_from_genesis_on(self):
+        text = "reth_filter_maps_first_indexed_block 0\nreth_filter_maps_last_indexed_block 26150123\n"
+        self.assertEqual(self.window(text), (0, 26150123))
+
+    def test_no_index_when_the_index_is_off_or_holds_no_block(self):
+        self.assertIsNone(self.window(""))
+        self.assertIsNone(self.window("reth_filter_maps_first_indexed_block 0\nreth_filter_maps_last_indexed_block 0\n"))

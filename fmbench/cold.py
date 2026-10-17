@@ -68,7 +68,7 @@ def _ready(rpc_url: str, metrics_url: str, index_mode: bool) -> bool:
     try:
         rpc.Client(rpc_url, timeout_s=5).call("eth_blockNumber", [])
         if index_mode:
-            return bool(prom.scrape(metrics_url, timeout_s=5).value("reth_filter_maps_last_indexed_block"))
+            return prom.indexed_window(prom.scrape(metrics_url, timeout_s=5)) is not None
         return True
     except (rpc.RpcError, OSError):
         return False
