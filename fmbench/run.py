@@ -59,6 +59,13 @@ def counter_delta(before: prom.Snapshot, after: prom.Snapshot) -> dict[str, dict
     return out
 
 
+def add_counters(total: dict[str, dict[str, float]], delta: dict[str, dict[str, float]]) -> None:
+    """Adds counter deltas (keyed by name and path, as `counter_delta` returns them) into `total`."""
+    for name, paths in delta.items():
+        for path, value in paths.items():
+            total.setdefault(name, {})[path] = total.get(name, {}).get(path, 0) + value
+
+
 def parse_logs(response: rpc.Response) -> tuple[list[dict[str, Any]] | None, Any]:
     """Returns the logs of a response, or `None` and its error: the transport error, the JSON-RPC
     error object, or the HTTP status with the start of a body that is not JSON-RPC."""
@@ -157,7 +164,7 @@ def main(args: argparse.Namespace) -> int:
         timeout_s=args.timeout,
         spread=args.spread,
     )
-    directory = meta.run_dir(args.out, info, args.run_id)
+    directory = meta.run_dir(args.out, info, args.run_id, header.get("kind"))
     meta.write(directory, info)
     client = rpc.Client(args.rpc, timeout_s=args.timeout)
     metrics_url = None if args.mode == "today" else args.metrics

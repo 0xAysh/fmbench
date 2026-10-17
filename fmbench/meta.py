@@ -128,11 +128,12 @@ def file_info(path: str) -> dict[str, str]:
         return {"file": os.path.basename(path), "sha256": _sha256(file)}
 
 
-def run_dir(out: str, meta: dict[str, Any], run_id: str | None) -> str:
-    """Creates and returns `<out>/<commit>/<run-id>/`. The commit is shortened to 10 characters."""
+def run_dir(out: str, meta: dict[str, Any], run_id: str | None, label: str | None = None) -> str:
+    """Creates and returns `<out>/<commit>/<run-id>/`, the commit shortened to 10 characters. The
+    default run id is the command, mode, cache state, `label` and start time."""
     if run_id is None:
         stamp = meta["started"].replace("-", "").replace(":", "")
-        run_id = "-".join(str(part) for part in (meta["command"], meta["mode"], meta["cache"], meta.get("kind"), stamp) if part)
+        run_id = "-".join(part for part in (meta["command"], meta["mode"], meta["cache"], label, stamp) if part)
     path = os.path.join(out, meta["commit"][:10], run_id)
     os.makedirs(path, exist_ok=False)
     return path
