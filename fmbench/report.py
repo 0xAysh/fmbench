@@ -204,8 +204,9 @@ def g7_verdict(kind: str, width: sample.Width, r50: float, r90: float, s50: floa
     """Applies the G7 rule of a class type to the index/bloom ratios of p50 and p90, given the
     cell's spread of each. Each ratio is judged on its own: within its spread of its limit it is
     `equal`, never a fail; outside, it passes or fails against the limit. The cell fails if a
-    ratio fails, passes if all pass, and is `equal` otherwise. For the equal classes (Q6, Q7)
-    both ratios within the spread of 1 is the pass condition. Dense classes check p50 only."""
+    ratio fails, passes if all pass, and is `equal` otherwise. For an equal class (the wildcard,
+    which both paths serve from the header bloom) both ratios within the spread of 1 is the pass
+    condition. Dense classes check p50 only."""
     rule = gates["g7"][kind]
     if kind == "equal":
         return PASS if abs(r50 - 1) <= s50 and abs(r90 - 1) <= s90 else FAIL

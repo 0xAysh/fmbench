@@ -2,10 +2,10 @@
   "spread_floor": 0.05,
   "g1": {"queries_min": 10000, "differences_max": 0},
   "g7": {
-    "selective": {"classes": ["Q1", "Q2", "Q8", "Q9"], "p50_ratio_max": 1.0, "p90_ratio_max": 1.0,
+    "selective": {"classes": ["Q1", "Q2", "Q6", "Q8", "Q9"], "p50_ratio_max": 1.0, "p90_ratio_max": 1.0,
                   "wide_width_min": 100000, "wide_p50_ratio_max": 0.5},
     "dense": {"classes": ["Q3", "Q4", "Q5"], "p50_ratio_max": 1.10},
-    "equal": {"classes": ["Q6", "Q7"]}
+    "equal": {"classes": ["Q7"]}
   },
   "g8": {"clients": [1, 8, 32, 64], "qps_ratio_min": 1.0, "p99_ratio_max": 1.0},
   "g4": {"p50_ratio_max": 1.05, "p99_ratio_max": 1.05},
