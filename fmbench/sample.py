@@ -409,8 +409,7 @@ def format_queries(header: dict[str, Any], queries: list[dict[str, Any]]) -> str
 
 def read_queries(path: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Reads a query file written by `sample`."""
-    with open(path) as file:
-        lines = [json.loads(line) for line in file if line.strip()]
+    lines = meta.read_jsonl(path)
     if not lines or "header" not in lines[0]:
         raise ValueError(f"{path}: not a query file (no header line)")
     return lines[0]["header"], lines[1:]

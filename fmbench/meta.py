@@ -1,4 +1,4 @@
-"""`meta.json`: what a result was measured on. A result without it is invalid.
+"""`meta.json` and the result files: what a result was measured on. A result without it is invalid.
 
 It reads the running node from `/proc/<pid>`, so the kit runs on the node's machine (Linux).
 """
@@ -139,6 +139,12 @@ def write(directory: str, meta: dict[str, Any]) -> None:
     with open(os.path.join(directory, "meta.json"), "w") as file:
         json.dump(meta, file, indent=2)
         file.write("\n")
+
+
+def read_jsonl(path: str) -> list[dict[str, Any]]:
+    """Reads a JSONL file (a query file or a result), skipping blank lines."""
+    with open(path) as file:
+        return [json.loads(line) for line in file if line.strip()]
 
 
 def arg(cmdline: list[str], flag: str) -> str | None:

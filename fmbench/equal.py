@@ -6,16 +6,15 @@ import argparse
 import json
 from typing import Any
 
+from fmbench import meta
+
 
 def first_reps(path: str) -> dict[str, dict[str, Any]]:
     """Returns the first repetition of each query of a `seq.jsonl` file."""
     lines: dict[str, dict[str, Any]] = {}
-    with open(path) as file:
-        for text in file:
-            if text.strip():
-                line = json.loads(text)
-                if line["query_id"] not in lines or line["rep"] < lines[line["query_id"]]["rep"]:
-                    lines[line["query_id"]] = line
+    for line in meta.read_jsonl(path):
+        if line["query_id"] not in lines or line["rep"] < lines[line["query_id"]]["rep"]:
+            lines[line["query_id"]] = line
     return lines
 
 
