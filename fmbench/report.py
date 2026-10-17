@@ -100,8 +100,7 @@ def spread_pair(runs: list[dict[str, Any]], mode: str, cache: str) -> tuple[dict
     repeat = pick(runs, "run", mode, cache, spread=True, kind="g7")
     if repeat is None:
         return None
-    same = {key: repeat["meta"][key] for key in ("queries", "queries_used", "reps")}
-    base = pick(runs, "run", mode, cache, kind="g7", **same)
+    base = pick(runs, "run", mode, cache, kind="g7", **_same_queries(repeat))
     return (base, repeat) if base else None
 
 
@@ -112,8 +111,14 @@ def g7_runs(runs: list[dict[str, Any]], cache: str) -> tuple[dict[str, Any] | No
     index = pick(runs, "run", "index", cache, kind="g7")
     if index is None:
         return None, None, None
-    same = {key: index["meta"][key] for key in ("queries", "queries_used", "reps")}
+    same = _same_queries(index)
     return index, pick(runs, "run", "bloom", cache, kind="g7", **same), pick(runs, "run", "today", cache, kind="g7", **same)
+
+
+def _same_queries(found: dict[str, Any]) -> dict[str, Any]:
+    """Returns the meta fields that a run compared with `found` must match: the query file, the
+    query count and the repetitions."""
+    return {key: found["meta"][key] for key in ("queries", "queries_used", "reps")}
 
 
 def fell_back(cls: str, counters: dict[str, dict[str, float]]) -> bool:
