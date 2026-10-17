@@ -2,7 +2,7 @@ import json
 import os
 import unittest
 
-from fmbench import report
+from fmbench import report, sample
 
 with open(os.path.join(os.path.dirname(__file__), "..", "gates.json")) as file:
     GATES = json.load(file)
@@ -219,9 +219,13 @@ class SweepMeanTest(unittest.TestCase):
 
 
 class FellBackTest(unittest.TestCase):
-    def test_a_failed_lookup_or_a_range_served_in_part_by_the_bloom(self):
-        self.assertFalse(report.fell_back({WINDOWS: {"index": 3, "bloom": 0}, FALLBACKS: {"": 0}}))
-        self.assertFalse(report.fell_back({WINDOWS: {"index": 0, "bloom": 2}, FALLBACKS: {"": 0}}))
-        self.assertFalse(report.fell_back({}))
-        self.assertTrue(report.fell_back({WINDOWS: {"index": 3, "bloom": 1}, FALLBACKS: {"": 0}}))
-        self.assertTrue(report.fell_back({WINDOWS: {"index": 0, "bloom": 2}, FALLBACKS: {"": 1}}))
+    def test_a_failed_lookup_or_any_bloom_window(self):
+        self.assertFalse(report.fell_back("Q1", {WINDOWS: {"index": 3, "bloom": 0}, FALLBACKS: {"": 0}}))
+        self.assertFalse(report.fell_back("Q1", {}))
+        self.assertTrue(report.fell_back("Q1", {WINDOWS: {"index": 3, "bloom": 1}, FALLBACKS: {"": 0}}))
+        self.assertTrue(report.fell_back("Q1", {WINDOWS: {"index": 0, "bloom": 2}, FALLBACKS: {"": 1}}))
+        # A wiped store has no indexed range: every window goes to the bloom without a failed lookup.
+        self.assertTrue(report.fell_back("Q1", {WINDOWS: {"index": 0, "bloom": 2}, FALLBACKS: {"": 0}}))
+
+    def test_the_wildcard_is_never_looked_up(self):
+        self.assertFalse(report.fell_back(sample.WILDCARD, {WINDOWS: {"index": 0, "bloom": 2}, FALLBACKS: {"": 0}}))

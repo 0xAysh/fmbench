@@ -32,11 +32,13 @@ TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 # `Approval(address,address,uint256)`.
 APPROVAL = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"
 
-# Q6 (near the head) and Q7 (the wildcard) use their own widths; the matrix widths do not apply.
-# A wildcard returns every log of its range, so it stays under the result cap only over a few
-# blocks.
+# The wildcard: a filter without an address or topic, which returns every log of its range. Reth
+# never looks it up in the index; the header bloom serves it on both paths.
+WILDCARD = "Q7"
+# Q6 (near the head) and the wildcard use their own widths; the matrix widths do not apply. The
+# wildcard stays under the result cap only over a few blocks.
 NARROW_WIDTHS: tuple[Width, ...] = (1, 10, 100)
-NARROW_CLASSES = ("Q6", "Q7")
+NARROW_CLASSES = ("Q6", WILDCARD)
 # The filters per class.
 PER_CLASS = 5
 # A rare filter (Q1, Q9) has this many logs over the whole window.
@@ -159,7 +161,7 @@ def pick_filters(
     # Q6 alternates the rare and the popular filters, so the head check covers both shapes.
     head = [p for pair in itertools.zip_longest(filters["Q1"], filters["Q3"]) for p in pair if p]
     filters["Q6"] = head[:PER_CLASS]
-    filters["Q7"] = [Pick({"topics": []}, counts.logs * rate)]
+    filters[WILDCARD] = [Pick({"topics": []}, counts.logs * rate)]
     return Selection({c: filters[c] for c in CLASSES}, notes)
 
 

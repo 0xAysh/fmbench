@@ -105,14 +105,14 @@ def spread_pair(runs: list[dict[str, Any]], mode: str, cache: str) -> tuple[dict
     return (base, repeat) if base else None
 
 
-def fell_back(counters: dict[str, dict[str, float]]) -> bool:
-    """Whether the index did not serve all of an index-mode request: a lookup failed (`fallbacks`),
-    or the index served part of the range and the header bloom the rest (the window's tail moved
-    under the query). A filter without an address or topic is never looked up, so all its windows
-    are bloom windows by design."""
-    windows = counters.get(prom.RPC_FILTER_PREFIX + "windows_total", {})
+def fell_back(cls: str, counters: dict[str, dict[str, float]]) -> bool:
+    """Whether the index did not serve all of an index-mode request of class `cls`: a lookup
+    failed (`fallbacks`), or the header bloom served a window, for part of the range (the index
+    tail moved under the query) or all of it (a wiped store has no indexed range). The wildcard
+    (`sample.WILDCARD`) is never looked up, so all its windows are bloom windows by design."""
+    bloom_windows = counters.get(prom.RPC_FILTER_PREFIX + "windows_total", {}).get("bloom", 0)
     fallbacks = sum(counters.get(prom.RPC_FILTER_PREFIX + "fallbacks_total", {}).values())
-    return fallbacks > 0 or (windows.get("index", 0) > 0 and windows.get("bloom", 0) > 0)
+    return fallbacks > 0 or (cls != sample.WILDCARD and bloom_windows > 0)
 
 
 def d2_check(index_ms: float | None, index_error: Any, bloom_p50_ms: float | None) -> str:
@@ -230,7 +230,7 @@ def g7_rows(
             row["verdict"], row["note"] = NOT_MEASURED, "missing on a path" if kind else "no G7 rule"
         elif a.errors or b.errors:
             row["verdict"], row["note"] = NOT_MEASURED, f"errors: index {a.errors}, bloom {b.errors}"
-        elif fell_back(a.counters):
+        elif fell_back(cls, a.counters):
             row["verdict"], row["note"] = NOT_MEASURED, "the index path fell back to the header bloom"
         elif a.digests != b.digests:
             row["verdict"], row["note"] = NOT_MEASURED, "results differ between the paths (G1)"
@@ -487,7 +487,7 @@ class _Report:
                     parts.append(f"{mode} > {timeout_s / 60:.0f} min")
                 else:
                     parts.append(f"{mode} " + (f"error {line['error']}" if line["error"] else f"{line['latency_ms']:.1f} ms"))
-                if mode == "index" and fell_back(line["counters"]):
+                if mode == "index" and fell_back(sample.query_cell(query_id)[0], line["counters"]):
                     parts[-1] += " (fell back to the header bloom)"
             self.md.append(f"- {query_id}: {', '.join(parts)}")
         self.md.append("")
@@ -501,7 +501,7 @@ class _Report:
             lines = meta.read_jsonl(os.path.join(found["dir"], "seq.jsonl"))
             bloom_p50 = stats.percentile([line["latency_ms"] for line in lines if line["query_id"] == reference and line["error"] is None], 0.5)
         index_line = shots.get(q1_id or "", {}).get("index", (None, None))[0]
-        index_ms = index_line["latency_ms"] if index_line and not fell_back(index_line["counters"]) else None
+        index_ms = index_line["latency_ms"] if index_line and not fell_back("Q1", index_line["counters"]) else None
         self.verdicts["D2"] = d2_check(index_ms, index_line["error"] if index_line else None, bloom_p50)
         self.md += [f"D2: the index whole-window Q1 against the bloom p50 of the same filter at {bloom_width} blocks ({_ms(bloom_p50)} ms): "
                     f"**{self.verdicts['D2']}**. PR #11 T11 lands only on a pass.", ""]
