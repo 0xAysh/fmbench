@@ -105,6 +105,17 @@ def spread_pair(runs: list[dict[str, Any]], mode: str, cache: str) -> tuple[dict
     return (base, repeat) if base else None
 
 
+def g7_runs(runs: list[dict[str, Any]], cache: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    """Returns the latest index g7 run of `cache` and the latest bloom and today g7 runs of the
+    same query file, query count and repetitions, each `None` when missing (all three without an
+    index run). A newer smoke run with `--limit` is never compared with the full matrix."""
+    index = pick(runs, "run", "index", cache, kind="g7")
+    if index is None:
+        return None, None, None
+    same = {key: index["meta"][key] for key in ("queries", "queries_used", "reps")}
+    return index, pick(runs, "run", "bloom", cache, kind="g7", **same), pick(runs, "run", "today", cache, kind="g7", **same)
+
+
 def fell_back(cls: str, counters: dict[str, dict[str, float]]) -> bool:
     """Whether the index did not serve all of an index-mode request of class `cls`: a lookup
     failed (`fallbacks`), or the header bloom served a window, for part of the range (the index
@@ -367,11 +378,11 @@ class _Report:
         verdicts = []
         all_rows = []
         for cache in ("warm", "cold"):
-            index, bloom = (seq_cells(pick(self.runs, "run", mode, cache, kind="g7")) for mode in ("index", "bloom"))
-            if index is None and bloom is None:
+            index, bloom, today = (seq_cells(found) for found in g7_runs(self.runs, cache))
+            if index is None:
                 continue
             self.heading(f"G7 single-query latency, {cache}")
-            rows = g7_rows(index or {}, bloom or {}, self.spread(cache), self.gates, seq_cells(pick(self.runs, "run", "today", cache, kind="g7")))
+            rows = g7_rows(index, bloom or {}, self.spread(cache), self.gates, today)
             verdicts += [row["verdict"] for row in rows]
             all_rows += rows
             self.md += _table(
@@ -494,7 +505,8 @@ class _Report:
         q1_id = next((query_id for query_id in sorted(shots) if query_id.startswith("Q1-")), None)
         bloom_width = self.gates["d2"]["bloom_width"]
         bloom_p50 = None
-        found = pick(self.runs, "run", "bloom", kind="g7")
+        # The bloom run of the warm G7 table.
+        found = g7_runs(self.runs, "warm")[1]
         if found and q1_id:
             # The one-shot holds the first Q1 filter of g7.jsonl: the same filter index.
             reference = f"Q1-w{bloom_width}-{q1_id.split('-')[2]}"

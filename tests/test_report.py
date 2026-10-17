@@ -13,6 +13,13 @@ WINDOWS = "reth_rpc_eth_filter_windows_total"
 FALLBACKS = "reth_rpc_eth_filter_fallbacks_total"
 
 
+def found(started, mode="index", spread=False, used=100, reps=25):
+    """A finished warm g7 run of one query file with `used` queries and `reps` repetitions."""
+    meta = {"command": "run", "mode": mode, "cache": "warm", "kind": "g7", "ended": "x", "started": started,
+            "spread": spread, "queries": {"sha256": "a"}, "queries_used": used, "reps": reps}
+    return {"dir": started, "meta": meta}
+
+
 def seq(query_id, latencies, digest="d", error_rep=None, counters=None):
     """`seq.jsonl` lines of one query, one per latency."""
     return [
@@ -94,11 +101,6 @@ class SpreadTest(unittest.TestCase):
         self.assertEqual(report.spreads(a, b, floor=0.05)[("Q3", 500)], (0.05, 0.05))
 
     def test_pairs_the_spread_run_with_a_run_of_the_same_queries_and_repetitions(self):
-        def found(started, spread=False, used=100, reps=25):
-            meta = {"command": "run", "mode": "index", "cache": "warm", "kind": "g7", "ended": "x", "started": started,
-                    "spread": spread, "queries": {"sha256": "a"}, "queries_used": used, "reps": reps}
-            return {"dir": started, "meta": meta}
-
         base, repeat = found("1"), found("4", spread=True)
         runs = [base, found("2", used=20), found("3", reps=1), repeat]
         self.assertEqual(report.spread_pair(runs, "index", "warm"), (base, repeat))
@@ -229,3 +231,12 @@ class FellBackTest(unittest.TestCase):
 
     def test_the_wildcard_is_never_looked_up(self):
         self.assertFalse(report.fell_back(sample.WILDCARD, {WINDOWS: {"index": 0, "bloom": 2}, FALLBACKS: {"": 0}}))
+
+
+class G7RunsTest(unittest.TestCase):
+    def test_compares_the_latest_index_run_with_runs_of_the_same_queries_and_repetitions(self):
+        matrix = (found("1"), found("2", mode="bloom"), found("3", mode="today"))
+        smoke = found("4", mode="bloom", used=20, reps=1)
+        self.assertEqual(report.g7_runs([*matrix, smoke], "warm"), matrix)
+        self.assertEqual(report.g7_runs([found("1"), smoke], "warm"), (found("1"), None, None))
+        self.assertEqual(report.g7_runs([smoke], "warm"), (None, None, None))
