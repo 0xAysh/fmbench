@@ -67,6 +67,7 @@ class Client:
             reused = self._conn is not None
             if self._conn is None:
                 self._conn = self._connect()
+            # A reused connection is timed from here, a new one from the end of its handshake.
             started = time.perf_counter()
             try:
                 if self._conn.sock is None:
