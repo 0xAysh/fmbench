@@ -1,8 +1,8 @@
 """`report`: the G1, G4, G7 and G8 tables, the sweep, one-shot and build tables, the chart CSVs
 and the gate verdicts of one commit's results.
 
-Verdicts are `pass`, `fail`, `equal` (the difference is inside the run-to-run spread, D4) and
-`not measured` (missing data, an error on either path, or different results).
+Verdicts are `pass`, `fail`, `equal` (a ratio is within the run-to-run spread of its limit, D4)
+and `not measured` (missing data, an error on either path, or different results).
 """
 
 from __future__ import annotations
@@ -126,11 +126,13 @@ def d2_check(index_ms: float | None, index_error: Any, bloom_p50_ms: float | Non
 
 
 def _outcome(ratio: float, spread: float, limit: float, higher_is_better: bool = False) -> str:
-    """Judges one index/bloom ratio: `equal` inside the spread around 1, else `pass` or `fail`
-    against its limit."""
-    if abs(ratio - 1) <= spread:
+    """Judges one index/bloom ratio against its limit: `equal` within `spread` of the limit
+    (`limit × (1 ± spread)`), where the noise cannot tell them apart, else `pass` on the better
+    side and `fail` on the worse one. A worse ratio never gets a better verdict."""
+    low, high = limit * (1 - spread), limit * (1 + spread)
+    if low <= ratio <= high:
         return EQUAL
-    return PASS if (ratio >= limit if higher_is_better else ratio <= limit) else FAIL
+    return PASS if (ratio > high if higher_is_better else ratio < low) else FAIL
 
 
 def _combine(outcomes: list[str]) -> str:
@@ -143,8 +145,8 @@ def _combine(outcomes: list[str]) -> str:
 
 def g8_verdict(index: dict[str, Any] | None, bloom: dict[str, Any] | None, gates: dict[str, Any]) -> str:
     """G8 at one client count: index QPS at least the bloom QPS and index p99 at most the bloom
-    p99, each ratio judged on its own against the spread floor. A flagged client, any non-`ok`
-    request, a missing run, no bloom answer or no latency is `not measured`."""
+    p99, each ratio judged on its own with the spread floor around its limit. A flagged client,
+    any non-`ok` request, a missing run, no bloom answer or no latency is `not measured`."""
     if index is None or bloom is None:
         return NOT_MEASURED
     if any(s["client_cpu_flag"] or set(s["statuses"]) - {"ok"} for s in (index, bloom)):
@@ -187,10 +189,10 @@ def class_type(cls: str, gates: dict[str, Any]) -> str | None:
 
 def g7_verdict(kind: str, width: sample.Width, r50: float, r90: float, s50: float, s90: float, gates: dict[str, Any]) -> str:
     """Applies the G7 rule of a class type to the index/bloom ratios of p50 and p90, given the
-    cell's spread of each. Each ratio is judged on its own: inside its spread it is `equal`, never
-    a fail; outside it, it passes or fails against its limit. The cell fails if a ratio fails,
-    passes if all pass, and is `equal` otherwise. For the equal classes (Q6, Q7) both ratios
-    inside the spread is the pass condition. Dense classes check p50 only."""
+    cell's spread of each. Each ratio is judged on its own: within its spread of its limit it is
+    `equal`, never a fail; outside, it passes or fails against the limit. The cell fails if a
+    ratio fails, passes if all pass, and is `equal` otherwise. For the equal classes (Q6, Q7)
+    both ratios within the spread of 1 is the pass condition. Dense classes check p50 only."""
     rule = gates["g7"][kind]
     if kind == "equal":
         return PASS if abs(r50 - 1) <= s50 and abs(r90 - 1) <= s90 else FAIL

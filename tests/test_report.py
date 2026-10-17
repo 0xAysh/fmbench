@@ -121,11 +121,34 @@ class WideRuleTest(unittest.TestCase):
         self.assertEqual(report.g7_verdict("selective", 500, 1.03, 0.70, 0.05, 0.05, GATES), "equal")
         self.assertEqual(report.g7_verdict("selective", 500, 1.03, 1.20, 0.05, 0.05, GATES), "fail")
 
+    def test_a_ratio_within_the_spread_of_a_wide_limit_is_equal(self):
+        # The limit is 0.5: equal from 0.475 to 0.525.
+        self.assertEqual(report.g7_verdict("selective", 100_000, 0.51, 0.7, 0.05, 0.05, GATES), "equal")
+        self.assertEqual(report.g7_verdict("selective", 100_000, 0.97, 0.7, 0.05, 0.05, GATES), "fail")
+
     def test_dense_and_equal_rules(self):
-        self.assertEqual(report.g7_verdict("dense", 100_000, 1.08, 2.0, 0.05, 0.05, GATES), "pass")
-        self.assertEqual(report.g7_verdict("dense", 500, 1.11, 1.0, 0.05, 0.05, GATES), "fail")
+        # The dense limit is 1.10: equal from 1.045 to 1.155.
+        self.assertEqual(report.g7_verdict("dense", 100_000, 1.0, 2.0, 0.05, 0.05, GATES), "pass")
+        self.assertEqual(report.g7_verdict("dense", 500, 1.12, 1.0, 0.05, 0.05, GATES), "equal")
+        self.assertEqual(report.g7_verdict("dense", 500, 1.2, 1.0, 0.05, 0.05, GATES), "fail")
         self.assertEqual(report.g7_verdict("equal", 500, 1.04, 0.97, 0.05, 0.05, GATES), "pass")
         self.assertEqual(report.g7_verdict("equal", 500, 1.04, 0.9, 0.05, 0.05, GATES), "fail")
+
+
+class BandTest(unittest.TestCase):
+    def test_a_worse_ratio_never_gets_a_better_verdict(self):
+        cases = {
+            "selective at 500": lambda r: report.g7_verdict("selective", 500, r, 0.5, 0.05, 0.05, GATES),
+            "selective at 100,000": lambda r: report.g7_verdict("selective", 100_000, r, 0.4, 0.05, 0.05, GATES),
+            "dense": lambda r: report.g7_verdict("dense", 500, r, 1.0, 0.05, 0.05, GATES),
+            "G8 p99": lambda r: report.g8_verdict(load_summary(10, 100 * r), load_summary(10, 100), GATES),
+            "G8 QPS": lambda r: report.g8_verdict(load_summary(10 / r, 50), load_summary(10, 100), GATES),
+        }
+        for name, verdict in cases.items():
+            with self.subTest(name):
+                # SEVERITY runs from the worst verdict to the best.
+                ranks = [report.SEVERITY.index(verdict(r / 100)) for r in range(30, 160)]
+                self.assertEqual(ranks, sorted(ranks, reverse=True))
 
 
 class D2Test(unittest.TestCase):
