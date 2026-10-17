@@ -5,13 +5,13 @@ from __future__ import annotations
 import argparse
 import sys
 
-from fmbench import meta, sample
+from fmbench import cold, meta, sample
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fmbench", description=__doc__)
     subparsers = parser.add_subparsers(required=True, metavar="command")
-    for module in (sample,):
+    for module in (sample, cold):
         module.add_parser(subparsers)
     args = parser.parse_args(argv)
     try:
