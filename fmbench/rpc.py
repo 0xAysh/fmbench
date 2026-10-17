@@ -59,32 +59,37 @@ class Client:
 
         A timeout closes the connection and returns `error="timeout"` with the timeout as latency;
         the next call reconnects. A dropped keep-alive connection is reopened once and the request
-        sent again (log queries are idempotent).
+        sent again (log queries are idempotent); only the second attempt is timed. The TCP
+        handshake of a new connection is not timed either.
         """
-        for attempt in range(2):
+        retried = False
+        while True:
             reused = self._conn is not None
             if self._conn is None:
                 self._conn = self._connect()
             started = time.perf_counter()
             try:
+                if self._conn.sock is None:
+                    self._conn.connect()
+                    started = time.perf_counter()
                 self._conn.request(
                     "POST", self.path, body=body, headers={"Content-Type": "application/json"}
                 )
                 response = self._conn.getresponse()
                 data = response.read()
             except TimeoutError:
-                self._close()
+                self.close()
                 return Response(None, b"", self.timeout_s * 1000.0, TIMEOUT)
             except (ConnectionError, http.client.HTTPException, OSError) as error:
-                self._close()
-                if reused and attempt == 0:
+                self.close()
+                if reused and not retried:
+                    retried = True
                     continue
                 return Response(None, b"", (time.perf_counter() - started) * 1000.0, f"connection: {error}")
             latency_ms = (time.perf_counter() - started) * 1000.0
             if response.will_close:
-                self._close()
+                self.close()
             return Response(response.status, data, latency_ms, None)
-        raise AssertionError("unreachable: the second attempt always returns")
 
     def request_body(self, method: str, params: list[Any]) -> bytes:
         """Encodes one JSON-RPC request."""
@@ -104,16 +109,14 @@ class Client:
             reply = json.loads(response.body)
         except ValueError as error:
             raise RpcError(f"{method}: HTTP {response.status}: {response.body[:200]!r}") from error
-        if "error" in reply:
+        if isinstance(reply, dict) and "error" in reply:
             raise RpcError(f"{method}: {json.dumps(reply['error'])}")
-        if response.status != 200:
-            raise RpcError(f"{method}: HTTP {response.status}")
+        if response.status != 200 or not isinstance(reply, dict) or "result" not in reply:
+            raise RpcError(f"{method}: HTTP {response.status}: {response.body[:200]!r}")
         return reply["result"]
 
     def close(self) -> None:
-        self._close()
-
-    def _close(self) -> None:
+        """Closes the connection; the next call opens a new one."""
         if self._conn is not None:
             self._conn.close()
             self._conn = None

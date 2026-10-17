@@ -1,6 +1,7 @@
 import http.client
 import io
 import json
+import time
 import unittest
 
 from fmbench import rpc
@@ -50,6 +51,18 @@ def fake_connections(*sockets):
     return connect
 
 
+class SlowHandshake(http.client.HTTPConnection):
+    """A connection whose TCP handshake takes 50 ms."""
+
+    def __init__(self, sock):
+        super().__init__("127.0.0.1", 8545)
+        self.fake = sock
+
+    def connect(self):
+        time.sleep(0.05)
+        self.sock = self.fake
+
+
 class CallRawTest(unittest.TestCase):
     def test_a_timeout_is_an_error_with_the_timeout_as_latency_and_the_next_call_reconnects(self):
         slow, fresh = FakeSocket(None), FakeSocket(http_reply(b'{"result":1}'))
@@ -79,6 +92,12 @@ class CallRawTest(unittest.TestCase):
         self.assertEqual((status, body), (None, b""))
         self.assertEqual(error, "connection: Remote end closed connection without response")
 
+    def test_the_handshake_of_a_new_connection_is_not_timed(self):
+        client = rpc.Client("http://127.0.0.1:8545", connect=lambda: SlowHandshake(FakeSocket(http_reply(b"1"))))
+        response = client.call_raw(b"{}")
+        self.assertEqual(response.body, b"1")
+        self.assertLess(response.latency_ms, 50)
+
 
 class CallTest(unittest.TestCase):
     def test_returns_the_result(self):
@@ -93,3 +112,9 @@ class CallTest(unittest.TestCase):
         with self.assertRaises(rpc.RpcError) as raised:
             client.call("eth_getLogs", [{}])
         self.assertEqual(str(raised.exception), 'eth_getLogs: {"code": -32602, "message": "invalid params"}')
+
+    def test_a_reply_without_a_result_is_an_error(self):
+        reply = http_reply(b'{"jsonrpc":"2.0","id":1}')
+        client = rpc.Client("http://127.0.0.1:8545", connect=fake_connections(FakeSocket(reply)))
+        with self.assertRaises(rpc.RpcError):
+            client.call("eth_blockNumber", [])
