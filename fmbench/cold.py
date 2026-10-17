@@ -48,45 +48,58 @@ def restart(
 ) -> None:
     """Drops the page cache around a node restart, then waits until the node has caught up: its
     latest block is at most `AT_TIP_S` old and, in index mode, `reth_filter_maps_last_indexed_block`
-    is back at its value before the stop. A restarted node unwinds and executes its last blocks
-    again, and then the blocks of its downtime; a query sent earlier would compete with that work."""
+    has reached `reth_filter_maps_store_target` from before the stop. A restarted node unwinds and
+    executes its last blocks again, and then the blocks of its downtime; a query sent earlier would
+    compete with that work.
+
+    The index head always stays below the current target: it ends before the last block of the
+    last finished map, and the map in progress is not stored. A restarted indexer reports its
+    stored head at once, so only a step after the start that finishes a map past the old target
+    reaches it, once the finalized block has moved on."""
     ready = f"the latest block is at most {AT_TIP_S} s old" + (
-        " and reth_filter_maps_last_indexed_block is back at its value before the stop" if index_mode else ""
+        " and reth_filter_maps_last_indexed_block has reached reth_filter_maps_store_target from before the stop"
+        if index_mode
+        else ""
     )
     if dry_run:
         for step in steps(unit):
             print(shlex.join(step))
         print(f"wait up to {timeout_s:.0f} s until {ready}")
         return
-    indexed = 0
+    target = None
     if index_mode:
-        window = prom.indexed_window(prom.scrape(metrics_url, timeout_s=PROBE_TIMEOUT_S))
-        if window is None:
-            raise ColdError("the node reports no indexed window before the stop")
-        indexed = window[1]
+        try:
+            value = prom.scrape(metrics_url, timeout_s=PROBE_TIMEOUT_S).value(prom.FILTER_MAPS_PREFIX + "store_target")
+        except OSError as error:
+            raise ColdError(f"cannot read {metrics_url} before the stop: {error}") from error
+        if not value:
+            raise ColdError("the node reports no reth_filter_maps_store_target before the stop")
+        target = int(value)
     for step in steps(unit):
         result = subprocess.run(step, capture_output=True, text=True)
         if result.returncode != 0:
             raise ColdError(f"`{shlex.join(step)}` failed ({result.returncode}): {result.stderr.strip()}")
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        if _caught_up(rpc_url, metrics_url, indexed):
+        if _caught_up(rpc_url, metrics_url, target):
             return
         time.sleep(1)
     raise ColdError(f"the node was not ready after {timeout_s:.0f} s: waited until {ready}")
 
 
-def _caught_up(rpc_url: str, metrics_url: str, indexed: int) -> bool:
+def _caught_up(rpc_url: str, metrics_url: str, target: int | None) -> bool:
+    """Whether the latest block is at most `AT_TIP_S` old and the index head has reached `target`,
+    the index target before the stop (`None` outside index mode)."""
     try:
         latest = rpc.Client(rpc_url, timeout_s=PROBE_TIMEOUT_S).call("eth_getBlockByNumber", ["latest", False])
         if time.time() - int(latest["timestamp"], 16) > AT_TIP_S:
             return False
-        if not indexed:
+        if target is None:
             return True
         window = prom.indexed_window(prom.scrape(metrics_url, timeout_s=PROBE_TIMEOUT_S))
     except (rpc.RpcError, OSError):
         return False
-    return window is not None and window[1] >= indexed
+    return window is not None and window[1] >= target
 
 
 def add_parser(subparsers: Any) -> None:

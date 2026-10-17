@@ -20,7 +20,9 @@ python3 -m fmbench <command> -h
   `--log.file.format json` (block times come from the JSON file log).
 - `cold` and `run --cache cold` stop the unit, drop the page cache and start it, through
   `sudo -n` when not root, then wait until the node is back at the chain tip (latest block at
-  most 24 s old) and, in index mode, at its index head from before the stop.
+  most 24 s old) and, in index mode, its index head has reached the index target from before the
+  stop (`reth_filter_maps_store_target`). The head stays below the target while the node runs, so
+  this waits for the finalized block to move on.
 
 ## Commands
 
