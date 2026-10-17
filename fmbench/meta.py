@@ -103,7 +103,7 @@ def collect(command: str, mode: str, cache: str, unit: str, pid: int | None, **e
     """Returns the `meta.json` of a run that starts now."""
     info = node(unit, pid)
     check_mode(mode, info["cmdline"])
-    datadir = _arg(info["cmdline"], "--datadir")
+    datadir = arg(info["cmdline"], "--datadir")
     return {
         "command": command,
         "mode": mode,
@@ -145,7 +145,8 @@ def write(directory: str, meta: dict[str, Any]) -> None:
         file.write("\n")
 
 
-def _arg(cmdline: list[str], flag: str) -> str | None:
+def arg(cmdline: list[str], flag: str) -> str | None:
+    """Returns the value of `flag` (`--flag value` or `--flag=value`) in a command line."""
     for i, arg in enumerate(cmdline):
         if arg == flag and i + 1 < len(cmdline):
             return cmdline[i + 1]
