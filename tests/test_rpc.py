@@ -116,5 +116,6 @@ class CallTest(unittest.TestCase):
     def test_a_reply_without_a_result_is_an_error(self):
         reply = http_reply(b'{"jsonrpc":"2.0","id":1}')
         client = rpc.Client("http://127.0.0.1:8545", connect=fake_connections(FakeSocket(reply)))
-        with self.assertRaises(rpc.RpcError):
+        with self.assertRaises(rpc.RpcError) as raised:
             client.call("eth_blockNumber", [])
+        self.assertEqual(str(raised.exception), """eth_blockNumber: HTTP 200: b'{"jsonrpc":"2.0","id":1}'""")

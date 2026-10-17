@@ -347,10 +347,16 @@ class SampleFilesTest(unittest.TestCase):
     def test_the_header_lists_the_queries_the_cap_dropped(self):
         built = sample.build(FakeNode(), (1_000_000, 1_400_000), 7, 200, [500, 2000, 10000, 100000], 50, 1_000, "6ddddd1072")
         header, queries = built["g7"]
+        # One Transfer per block: Q4 has about 500 logs at 500 blocks and 2,000 at 2,000. The
+        # popular emitters and pairs (Q3, Q5) pass the cap at 100,000 blocks, the factory topic
+        # (Q8) at 10,000.
+        self.assertEqual(
+            header["dropped_by_cap"],
+            [*(f"Q3-w100000-{i:03d}" for i in range(5)), "Q4-w2000-000", "Q4-w10000-000", "Q4-w100000-000",
+             *(f"Q5-w100000-{i:03d}" for i in range(5)), "Q8-w10000-000", "Q8-w100000-000"],
+        )
         kept = {q["id"] for q in queries}
-        # One Transfer per block: Q4 has about 500 logs at 500 blocks and 100,000 at 100,000.
         self.assertIn("Q4-w500-000", kept)
-        self.assertIn("Q4-w100000-000", header["dropped_by_cap"])
         self.assertFalse(kept & set(header["dropped_by_cap"]))
 
     def test_the_header_records_the_sample(self):

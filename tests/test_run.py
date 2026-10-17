@@ -114,5 +114,12 @@ class CheckWindowTest(unittest.TestCase):
     def test_refuses_a_range_outside_the_window(self):
         snapshot = scrape("reth_filter_maps_first_indexed_block 50\nreth_filter_maps_last_indexed_block 100\n")
         for label, first, last in [("below", 40, 60), ("above", 90, 101)]:
-            with self.subTest(label=label), self.assertRaises(SystemExit):
-                run.check_window([("Q1-w500-000", 60, 70), (label, first, last)], snapshot)
+            with self.subTest(label=label):
+                with self.assertRaises(SystemExit) as raised:
+                    run.check_window([("Q1-w500-000", 60, 70), (label, first, last)], snapshot)
+                self.assertEqual(
+                    raised.exception.code,
+                    f"1 ranges leave the indexed window 50..100 (first: {label}); a query above the head has no maps, "
+                    "and below the first indexed block (the tail moves up as the chain grows) the bloom path serves part "
+                    "of it. Sample again with a larger --tail-margin",
+                )
