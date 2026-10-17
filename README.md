@@ -19,7 +19,8 @@ python3 -m fmbench <command> -h
   --rpc.max-response-size 1024`, `--metrics 127.0.0.1:9001`, and for `watch`
   `--log.file.format json` (block times come from the JSON file log).
 - `cold` and `run --cache cold` stop the unit, drop the page cache and start it, through
-  `sudo -n` when not root.
+  `sudo -n` when not root, then wait until the node is back at the chain tip (latest block at
+  most 24 s old) and, in index mode, at its index head from before the stop.
 
 ## Commands
 
