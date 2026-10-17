@@ -1,3 +1,5 @@
+import json
+import random
 import unittest
 
 from fmbench import sample
@@ -61,21 +63,15 @@ class TallyTest(unittest.TestCase):
 
 def window_logs(counts):
     """A whole-window `eth_getLogs` count lookup, keyed by the filter's JSON."""
-    import json
-
     return lambda filter_: counts.get(json.dumps(filter_, sort_keys=True), 0)
 
 
 def key(filter_):
-    import json
-
     return json.dumps(filter_, sort_keys=True)
 
 
 class RareTest(unittest.TestCase):
     def test_q1_takes_addresses_seen_once_with_1_to_100_logs_in_the_window_and_q2_adds_their_topic0(self):
-        import random
-
         logs = [log(addr(n), topic(n)) for n in range(1, 9)] + [log(addr(20), topic(20))] * 2
         logs.append(log(addr(30)))  # seen once, but with no topic0 for Q2
         counts = {1: 1, 2: 100, 3: 101, 4: 40, 5: 7, 6: 0, 7: 3, 8: 5000}
@@ -96,8 +92,6 @@ class RareTest(unittest.TestCase):
 
 class PopularTest(unittest.TestCase):
     def setUp(self):
-        import random
-
         # Address n emits 13 - n logs of topic n, n in 1..12; address 1 also emits 20 Approvals.
         logs = [log(addr(n), topic(n)) for n in range(1, 13) for _ in range(13 - n)]
         logs += [log(addr(1), APPROVAL)] * 20
@@ -130,8 +124,6 @@ class PopularTest(unittest.TestCase):
 
 class FactoryTest(unittest.TestCase):
     def test_q8_takes_the_non_token_topic0_with_most_emitters_at_50_200_and_1000_addresses(self):
-        import random
-
         swap, other = topic(1), topic(2)
         logs = [log(addr(n), TRANSFER) for n in range(1, 400)]
         logs += [log(addr(n), APPROVAL) for n in range(1, 300)]
@@ -157,8 +149,6 @@ class FactoryTest(unittest.TestCase):
 
 class WalletTest(unittest.TestCase):
     def test_q9_takes_recipients_seen_once_with_1_to_100_logs_then_senders(self):
-        import random
-
         token = addr(1)
         logs = [log(token, TRANSFER, word(60), r) for r in (word(1), word(2), word(3), word(4), topic(9))]
         logs += [log(token, TRANSFER, word(60), word(5))] * 2
@@ -188,8 +178,6 @@ class WalletTest(unittest.TestCase):
 
 class HeadAndWildcardTest(unittest.TestCase):
     def test_q6_alternates_q1_and_q3_filters_and_q7_is_the_wildcard(self):
-        import random
-
         logs = [log(addr(n), topic(n)) for n in range(1, 7)]
         logs += [log(addr(100 + n), topic(100)) for n in range(10) for _ in range(5)]
         lookup = {key({"address": [addr(n)], "topics": []}): 1 for n in range(1, 7)}
@@ -243,6 +231,14 @@ class G7Test(unittest.TestCase):
             },
         )
 
+    def test_the_wildcard_runs_at_the_narrow_widths(self):
+        selection = sample.Selection({"Q7": [sample.Pick({"topics": []}, 900.0)]}, {})
+        queries = sample.g7_queries(selection, [500, 100_000], WINDOW, max_logs=200_000)
+        self.assertEqual(
+            [(q["id"], q["expected_logs"]) for q in queries],
+            [("Q7-w1-000", 900), ("Q7-w10-000", 9000), ("Q7-w100-000", 90_000)],
+        )
+
     def test_a_width_wider_than_the_window_is_an_error(self):
         with self.assertRaises(ValueError):
             sample.g7_queries(self.selection(), [3_000_000], WINDOW, max_logs=200_000)
@@ -285,8 +281,6 @@ class OneshotTest(unittest.TestCase):
 
 class G1Test(unittest.TestCase):
     def test_draws_count_random_queries_inside_the_window_and_under_the_cap(self):
-        import random
-
         rare = sample.Pick({"address": [addr(1)], "topics": []}, 0.0005, 41)
         dense = sample.Pick({"address": [addr(2)], "topics": []}, 30.0)
         selection = sample.Selection({"Q1": [rare], "Q3": [dense], "Q6": [rare]}, {})
@@ -350,9 +344,16 @@ class SampleFilesTest(unittest.TestCase):
         self.assertEqual(first, self.files(7))
         self.assertNotEqual(first["g1"], self.files(8)["g1"])
 
-    def test_the_header_records_the_sample(self):
-        import json
+    def test_the_header_lists_the_queries_the_cap_dropped(self):
+        built = sample.build(FakeNode(), (1_000_000, 1_400_000), 7, 200, [500, 2000, 10000, 100000], 50, 1_000, "6ddddd1072")
+        header, queries = built["g7"]
+        kept = {q["id"] for q in queries}
+        # One Transfer per block: Q4 has about 500 logs at 500 blocks and 100,000 at 100,000.
+        self.assertIn("Q4-w500-000", kept)
+        self.assertIn("Q4-w100000-000", header["dropped_by_cap"])
+        self.assertFalse(kept & set(header["dropped_by_cap"]))
 
+    def test_the_header_records_the_sample(self):
         header = json.loads(self.files(7)["g7"].splitlines()[0])["header"]
         self.assertEqual(
             {k: header[k] for k in ("kind", "window", "to_block", "seed", "sampled_blocks", "widths", "node_commit")},

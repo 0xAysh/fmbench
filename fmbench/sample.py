@@ -32,13 +32,20 @@ TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 # `Approval(address,address,uint256)`.
 APPROVAL = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"
 
-# Q6 (near the head) uses its own widths; the matrix widths do not apply to it.
-HEAD_WIDTHS: tuple[Width, ...] = (1, 10, 100)
+# Q6 (near the head) and Q7 (the wildcard) use their own widths; the matrix widths do not apply.
+# A wildcard returns every log of its range, so it stays under the result cap only over a few
+# blocks.
+NARROW_WIDTHS: tuple[Width, ...] = (1, 10, 100)
+NARROW_CLASSES = ("Q6", "Q7")
+# The filters per class.
+PER_CLASS = 5
 # A rare filter (Q1, Q9) has this many logs over the whole window.
 RARE_LOGS = range(1, 101)
 # The pool that the popular classes (Q3, Q5) draw their filters from.
 POPULAR_POOL = 10
 DEFAULT_WIDTHS = "500,2000,10000,100000"
+# The result cap: a query whose estimated logs are above it is dropped.
+DEFAULT_MAX_LOGS = 200_000
 # The sampled window starts this many blocks above the first indexed block. The index drops whole
 # epochs (about 20,000 mainnet blocks) from its tail as the chain grows, so without a margin the
 # window's first blocks leave the index within hours and `run` refuses the file. 100,000 blocks
@@ -95,83 +102,82 @@ class Selection:
 
 
 def pick_filters(
-    tally: Tally,
+    counts: Tally,
     window_logs: Callable[[dict[str, Any]], int],
     rng: random.Random,
-    per_class: int = 5,
 ) -> Selection:
-    """Picks up to `per_class` filters per class from the sample's tallies (bench-kit spec K2).
+    """Picks up to `PER_CLASS` filters per class from the sample's tallies (bench-kit spec K2).
 
     `window_logs` counts a filter's logs over the whole indexed window (one `eth_getLogs`).
     """
     filters: dict[str, list[Pick]] = {}
     notes: dict[str, Any] = {}
-    rate = 1 / tally.blocks
+    rate = 1 / counts.blocks
 
-    singletons = sorted(a for a, n in tally.address.items() if n == 1 and a in tally.topic0_of)
+    singletons = sorted(a for a, n in counts.address.items() if n == 1 and a in counts.topic0_of)
     filters["Q1"] = _rare(
-        [{"address": [a], "topics": []} for a in singletons], window_logs, rng, per_class, rate
+        [{"address": [a], "topics": []} for a in singletons], window_logs, rng, PER_CLASS, rate
     )
     filters["Q2"] = [
-        Pick({"address": p.filter["address"], "topics": [tally.topic0_of[p.filter["address"][0]]]}, rate)
+        Pick({"address": p.filter["address"], "topics": [counts.topic0_of[p.filter["address"][0]]]}, rate)
         for p in filters["Q1"]
     ]
 
-    emitters = _ranked(tally.address)[:POPULAR_POOL]
+    emitters = _ranked(counts.address)[:POPULAR_POOL]
     filters["Q3"] = [
-        Pick({"address": [a], "topics": []}, tally.address[a] * rate)
-        for a in _draw(emitters, per_class, rng)
+        Pick({"address": [a], "topics": []}, counts.address[a] * rate)
+        for a in _draw(emitters, PER_CLASS, rng)
     ]
 
-    top_topic0 = _ranked(tally.topic0)[0]
-    filters["Q4"] = [Pick({"topics": [top_topic0]}, tally.topic0[top_topic0] * rate)]
+    top_topic0 = _ranked(counts.topic0)[0]
+    filters["Q4"] = [Pick({"topics": [top_topic0]}, counts.topic0[top_topic0] * rate)]
     notes["q4_topic0"] = top_topic0
     notes["q4_is_transfer"] = top_topic0 == TRANSFER
 
-    pairs = _ranked(tally.pair)[:POPULAR_POOL]
+    pairs = _ranked(counts.pair)[:POPULAR_POOL]
     filters["Q5"] = [
-        Pick({"address": [a], "topics": [t]}, tally.pair[(a, t)] * rate)
-        for a, t in _draw(pairs, per_class, rng)
+        Pick({"address": [a], "topics": [t]}, counts.pair[(a, t)] * rate)
+        for a, t in _draw(pairs, PER_CLASS, rng)
     ]
 
-    filters["Q8"], notes["q8_topic0"], notes["q8_addresses"] = _many_addresses(tally, rate)
+    filters["Q8"], notes["q8_topic0"], notes["q8_addresses"] = _many_addresses(counts, rate)
 
-    recipients = sorted(t for t, n in tally.recipient.items() if n == 1 and _is_address(t))
+    recipients = sorted(t for t, n in counts.recipient.items() if n == 1 and _is_address(t))
     filters["Q9"] = _rare(
-        [{"topics": [TRANSFER, None, t]} for t in recipients], window_logs, rng, per_class, rate
+        [{"topics": [TRANSFER, None, t]} for t in recipients], window_logs, rng, PER_CLASS, rate
     )
-    if len(filters["Q9"]) < per_class:
-        senders = sorted(t for t, n in tally.sender.items() if n == 1 and _is_address(t))
+    if len(filters["Q9"]) < PER_CLASS:
+        senders = sorted(t for t, n in counts.sender.items() if n == 1 and _is_address(t))
         filters["Q9"] += _rare(
             [{"topics": [TRANSFER, t]} for t in senders],
             window_logs,
             rng,
-            per_class - len(filters["Q9"]),
+            PER_CLASS - len(filters["Q9"]),
             rate,
         )
 
     # Q6 alternates the rare and the popular filters, so the head check covers both shapes.
     head = [p for pair in itertools.zip_longest(filters["Q1"], filters["Q3"]) for p in pair if p]
-    filters["Q6"] = head[:per_class]
-    filters["Q7"] = [Pick({"topics": []}, tally.logs * rate)]
+    filters["Q6"] = head[:PER_CLASS]
+    filters["Q7"] = [Pick({"topics": []}, counts.logs * rate)]
     return Selection({c: filters[c] for c in CLASSES}, notes)
 
 
-def _many_addresses(tally: Tally, rate: float) -> tuple[list[Pick], str | None, list[int]]:
+def _many_addresses(counts: Tally, rate: float) -> tuple[list[Pick], str | None, list[int]]:
     """Returns the Q8 filters, their `topic0` and their address counts: the `topic0` other than
     `Transfer` and `Approval` with the most distinct emitters (in practice a factory event such as
     a pool's `Swap`), with its emitters ranked by sample count, at 50, 200 and 1,000 addresses or
     as many as the sample has."""
-    candidates = [t for t in tally.emitters if t not in (TRANSFER, APPROVAL)]
+    candidates = [t for t in counts.emitters if t not in (TRANSFER, APPROVAL)]
     if not candidates:
         return [], None, []
-    factory = min(candidates, key=lambda t: (-len(tally.emitters[t]), t))
-    ranked = sorted(tally.emitters[factory], key=lambda a: (-tally.pair[(a, factory)], a))
+    factory = min(candidates, key=lambda t: (-len(counts.emitters[t]), t))
+    ranked = sorted(counts.emitters[factory], key=lambda a: (-counts.pair[(a, factory)], a))
     sizes = sorted({min(n, len(ranked)) for n in MANY_ADDRESSES})
     picks = [
         Pick(
             {"address": ranked[:n], "topics": [factory]},
-            sum(tally.pair[(a, factory)] for a in ranked[:n]) * rate,
+            sum(counts.pair[(a, factory)] for a in ranked[:n]) * rate,
         )
         for n in sizes
     ]
@@ -198,17 +204,17 @@ def _rare(
     candidates: list[dict[str, Any]],
     window_logs: Callable[[dict[str, Any]], int],
     rng: random.Random,
-    per_class: int,
+    wanted: int,
     rate: float,
 ) -> list[Pick]:
-    """Returns the first `per_class` candidates, in a seeded order, with 1–100 logs in the window."""
+    """Returns the first `wanted` candidates, in a seeded order, with 1–100 logs in the window."""
     rng.shuffle(candidates)
     picks = []
     for candidate in candidates[:MAX_RARE_CHECKS]:
         count = window_logs(candidate)
         if count in RARE_LOGS:
             picks.append(Pick(candidate, rate, count))
-            if len(picks) == per_class:
+            if len(picks) == wanted:
                 break
     return picks
 
@@ -249,20 +255,40 @@ def parse_widths(text: str) -> list[Width]:
     return widths
 
 
+class Template(NamedTuple):
+    """One filter of a class at one width: a query without its position in the window."""
+
+    query_id: str
+    cls: str
+    width: Width
+    blocks: int
+    pick: Pick
+    # The estimated logs: the filter's rate × the block count.
+    expected: int
+
+
+def templates(selection: Selection, widths: list[Width], window: tuple[int, int]) -> list[Template]:
+    """Returns every filter of every class at every width of its class: `widths`, or
+    `NARROW_WIDTHS` for Q6 and Q7. The result cap is not applied."""
+    out = []
+    for cls, picks in selection.filters.items():
+        for width in NARROW_WIDTHS if cls in NARROW_CLASSES else widths:
+            blocks = _blocks(width, window)
+            for i, pick in enumerate(picks):
+                out.append(Template(f"{cls}-w{width}-{i:03d}", cls, width, blocks, pick, round(pick.rate * blocks)))
+    return out
+
+
 def g7_queries(
     selection: Selection, widths: list[Width], window: tuple[int, int], max_logs: int
 ) -> list[dict[str, Any]]:
-    """Returns every filter of every class at every width, each query ending at the window's last
-    block. A query whose `expected_logs` is above `max_logs` is dropped (the result cap)."""
-    out = []
-    for cls, picks in selection.filters.items():
-        for width in _widths_of(cls, widths):
-            blocks = _blocks(width, window)
-            for i, pick in enumerate(picks):
-                expected = round(pick.rate * blocks)
-                if expected <= max_logs:
-                    out.append(_query(f"{cls}-w{width}-{i:03d}", cls, width, expected, pick, window[1] - blocks + 1, window[1]))
-    return out
+    """Returns every template under the result cap (`expected_logs` at most `max_logs`), each
+    query ending at the window's last block."""
+    return [
+        _query(t.query_id, t.cls, t.width, t.expected, t.pick, window[1] - t.blocks + 1, window[1])
+        for t in templates(selection, widths, window)
+        if t.expected <= max_logs
+    ]
 
 
 def oneshot_queries(selection: Selection, window: tuple[int, int]) -> list[dict[str, Any]]:
@@ -283,25 +309,18 @@ def g1_queries(
     max_logs: int,
     rng: random.Random,
 ) -> list[dict[str, Any]]:
-    """Returns `count` random queries for G1: a random class, then a random filter and width of
-    that class under the result cap, at a random position inside the window."""
-    cells: dict[str, list[tuple[int, Width, int]]] = {}
-    for cls, picks in selection.filters.items():
-        for width in _widths_of(cls, widths):
-            blocks = _blocks(width, window)
-            for i, pick in enumerate(picks):
-                if round(pick.rate * blocks) <= max_logs:
-                    cells.setdefault(cls, []).append((i, width, blocks))
-    classes = sorted(cells)
+    """Returns `count` random queries for G1: a random class, then a random template of that
+    class under the result cap, at a random position inside the window."""
+    by_class: dict[str, list[Template]] = {}
+    for t in templates(selection, widths, window):
+        if t.expected <= max_logs:
+            by_class.setdefault(t.cls, []).append(t)
+    classes = sorted(by_class)
     out = []
     for n in range(count):
-        cls = rng.choice(classes)
-        i, width, blocks = rng.choice(cells[cls])
-        pick = selection.filters[cls][i]
-        first = rng.randint(window[0], window[1] - blocks + 1)
-        out.append(
-            _query(f"{cls}-w{width}-{i:03d}-{n:05d}", cls, width, round(pick.rate * blocks), pick, first, first + blocks - 1)
-        )
+        t = rng.choice(by_class[rng.choice(classes)])
+        first = rng.randint(window[0], window[1] - t.blocks + 1)
+        out.append(_query(f"{t.query_id}-{n:05d}", t.cls, t.width, t.expected, t.pick, first, first + t.blocks - 1))
     return out
 
 
@@ -311,19 +330,14 @@ def query_cell(query_id: str) -> tuple[str, Width]:
     return cls, WINDOW if width[1:] == WINDOW else int(width[1:])
 
 
-def _widths_of(cls: str, widths: list[Width]) -> list[Width]:
-    return list(HEAD_WIDTHS) if cls == "Q6" else widths
-
-
 def _blocks(width: Width, window: tuple[int, int]) -> int:
     """Returns the block count of `width` in `window`."""
     size = window[1] - window[0] + 1
     if width == WINDOW:
         return size
-    assert isinstance(width, int)
-    if width > size:
-        raise ValueError(f"width {width} is wider than the indexed window ({size} blocks); use {WINDOW!r}")
-    return width
+    if isinstance(width, int) and width <= size:
+        return width
+    raise ValueError(f"width {width!r} is wider than the indexed window ({size} blocks); use {WINDOW!r}")
 
 
 def _query(
@@ -377,6 +391,7 @@ def build(
         "node_commit": node_commit,
         "max_logs": max_logs,
         "classes": {cls: len(picks) for cls, picks in selection.filters.items()},
+        "dropped_by_cap": [t.query_id for t in templates(selection, widths, window) if t.expected > max_logs],
         **selection.notes,
     }
     return {
@@ -408,7 +423,7 @@ def add_parser(subparsers: Any) -> None:
     parser.add_argument("--blocks", type=int, default=2000, help="random blocks whose receipts are tallied")
     parser.add_argument("--widths", type=parse_widths, default=parse_widths(DEFAULT_WIDTHS), help=f"block counts or 'window' (default {DEFAULT_WIDTHS})")
     parser.add_argument("--count", type=int, default=10_000, help="queries in g1.jsonl")
-    parser.add_argument("--max-logs", type=int, default=200_000, help="drop a query whose estimated logs are above this")
+    parser.add_argument("--max-logs", type=int, default=DEFAULT_MAX_LOGS, help="drop a query whose estimated logs are above this")
     parser.add_argument("--tail-margin", type=int, default=DEFAULT_TAIL_MARGIN, help="blocks between the first indexed block and the window start")
     parser.add_argument("--out", default="queries", help="directory of the query files")
     parser.set_defaults(func=main)
@@ -440,5 +455,5 @@ def main(args: argparse.Namespace) -> int:
             file.write(format_queries(header, queries))
         print(f"{paths[kind]}: {len(queries)} queries")
     header = built["g7"][0]
-    print(f"window {window[0]}..{window[1]}, classes {header['classes']}, Q4 topic0 {header['q4_topic0']} (Transfer: {header['q4_is_transfer']}), Q8 addresses {header['q8_addresses']}")
+    print(f"window {window[0]}..{window[1]}, classes {header['classes']}, Q4 topic0 {header['q4_topic0']} (Transfer: {header['q4_is_transfer']}), Q8 addresses {header['q8_addresses']}, {len(header['dropped_by_cap'])} queries dropped by the result cap")
     return 0
