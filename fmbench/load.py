@@ -24,6 +24,10 @@ HEAVY = {"Q1": 20, "Q2": 15, "Q8": 15, "Q9": 20, "Q3": 10, "Q5": 10, "Q6": 10}
 MAX_WIDTH = 100_000
 # A client above this share of one core may be the bottleneck: the run is flagged.
 CPU_FLAG = 0.8
+# Every client starts drawing at the same time, this long after the clients are launched, so that
+# all of them have started first.
+START_DELAY_S = 2.0
+START_DELAY_PER_CLIENT_S = 0.05
 
 
 def blocks(query: dict[str, Any]) -> int:
@@ -46,6 +50,7 @@ class Mix:
         self.queries = by_class
 
     def draw(self, rng: random.Random) -> dict[str, Any]:
+        """Draws one query: a class by weight, then one of its queries."""
         cls = rng.choices(self.classes, self.weights)[0]
         return rng.choice(self.queries[cls])
 
@@ -84,7 +89,6 @@ def summarize(
         "statuses": dict(Counter(r["status"] for r in started)),
         "latency_ms": latency,
         "client_cpu_max": max(cpu),
-        "client_cpu_mean": sum(cpu) / len(cpu),
         "client_cpu_flag": max(cpu) > CPU_FLAG,
         "missing_classes": missing,
     }
@@ -184,8 +188,7 @@ def main(args: argparse.Namespace) -> int:
     meta.write(directory, info)
     with open(os.path.join(directory, "load.jsonl"), "w") as out:
         for clients in counts:
-            # Every process starts drawing at the same wall-clock time, after all have started.
-            start_at = time.time() + 2 + 0.05 * clients
+            start_at = time.time() + START_DELAY_S + START_DELAY_PER_CLIENT_S * clients
             jobs = [
                 (n, args.rpc, args.timeout, queries, args.mix, f"{args.seed}-{clients}-{n}", start_at, args.warmup, args.duration)
                 for n in range(clients)
