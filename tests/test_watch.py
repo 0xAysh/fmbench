@@ -93,3 +93,18 @@ class DeriveTest(unittest.TestCase):
         cur.series[FM + "first_indexed_block"] = 0
         cur.series[FM + "last_indexed_block"] = 999
         self.assertEqual(watch.derive(None, cur)["bytes_per_block"], 1_000_010.0)
+
+
+class RowsTest(unittest.TestCase):
+    def test_every_index_series_has_a_column_before_the_node_reports_it(self):
+        starting = watch.Sample(0.0, {}, None, None, [], None)
+        header, first, second = watch.rows([starting, sample(10.0, 1_000, 10, 1.0, 50, 10.0, 100)])
+        column = header.index(FM + "blocks_rendered")
+        self.assertEqual((first[column], second[column]), (None, 1_000))
+        self.assertEqual(len(first), len(header))
+
+    def test_an_interval_without_an_answer_has_no_row_and_the_next_row_no_rates(self):
+        before, after, later = (sample(s, 3_000 * n, 100 * n, 1.0, 50, 10.0, 100) for n, s in ((1, 20.0), (2, 30.0), (3, 40.0)))
+        header, *lines = watch.rows([None, before, None, after, later])
+        rate = header.index("blocks_per_s")
+        self.assertEqual([(line[1], line[rate]) for line in lines], [(20.0, None), (30.0, None), (40.0, 300.0)])

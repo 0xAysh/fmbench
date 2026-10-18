@@ -1,8 +1,9 @@
 """Parser for the Prometheus text exposition format that Reth serves on `/metrics`.
 
-A snapshot maps `(name, frozenset(labels))` to the sample value. The kit discovers series by prefix
-(`reth_rpc_eth_filter_`, `reth_filter_maps_`), never by a fixed list, so a new metric shows up
-without a code change.
+A snapshot maps `(name, frozenset(labels))` to the sample value. `run` records the
+`reth_rpc_eth_filter_*` counters by prefix, so a new counter shows up without a code change.
+`watch.csv` has a fixed column per `reth_filter_maps_*` series (`watch.SERIES`), so a series the
+node registers late still has its column.
 """
 
 from __future__ import annotations

@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import http.client
 import json
 import os
 import re
+import sys
 import time
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -27,6 +30,16 @@ NEW_PAYLOAD = "reth_consensus_engine_beacon_new_payload_latency"
 PHASES = ("off", "catchup", "load")
 # The timeout of the finalized-block request of each sample.
 RPC_TIMEOUT_S = 30
+# The node's `reth_filter_maps_*` series: the index columns of `watch.csv`. The set is fixed, so a
+# first sample taken before the node registers the series still gets every column.
+SERIES = tuple(
+    prom.FILTER_MAPS_PREFIX + name
+    for name in (
+        "blocks_rendered", "failures", "first_indexed_block", "last_indexed_block", "maps_written", "resets", "running",
+        "step_duration_seconds_count", "step_duration_seconds_sum", "store_target",
+        "write_duration_seconds_count", "write_duration_seconds_sum",
+    )
+)
 
 _DURATION = re.compile(r"(\d+(?:\.\d+)?)(ns|µs|μs|us|ms|s)")
 _NS_PER_UNIT = {"ns": 1, "µs": 1_000, "μs": 1_000, "us": 1_000, "ms": 1_000_000, "s": 1_000_000_000}
@@ -119,6 +132,25 @@ def _new_payload_mean_ms(prev: Sample | None, cur: Sample) -> float | None:
     return (cur.new_payload[0] - prev.new_payload[0]) / count * 1000 if count else None
 
 
+def rows(samples: Iterable[Sample | None]) -> Iterator[list[Any]]:
+    """Yields the `watch.csv` header, then one row per sample. `None` is an interval in which the
+    node did not answer (stopped or still starting): it gets no row, and the next row gets no
+    rates, because a restart resets the node's counters."""
+    header = True
+    prev: Sample | None = None
+    for cur in samples:
+        if cur is None:
+            prev = None
+            continue
+        derived = derive(prev, cur)
+        if header:
+            header = False
+            yield ["time", "elapsed_s", "finalized", "store_bytes", "new_payload_sum", "new_payload_count", *SERIES, *derived]
+        payload = cur.new_payload or (None, None)
+        yield [meta.now(), round(cur.elapsed_s, 3), cur.finalized, cur.store_bytes, *payload, *(cur.series.get(c) for c in SERIES), *derived.values()]
+        prev = cur
+
+
 class LogTail:
     """Reads the lines appended to a log file since the last read. It starts at the end of the
     file and reopens it from the start after a rotation (a new inode or a shorter file)."""
@@ -183,28 +215,17 @@ def main(args: argparse.Namespace) -> int:
     meta.write(directory, info)
     tail = LogTail(args.log_file)
     client = rpc.Client(args.rpc, timeout_s=RPC_TIMEOUT_S)
-    started = time.monotonic()
-    prev: Sample | None = None
-    columns: list[str] | None = None
     with open(os.path.join(directory, "watch.csv"), "w", newline="") as watch_file, open(
         os.path.join(directory, "blocks.csv"), "w", newline=""
     ) as blocks_file:
         blocks = csv.writer(blocks_file)
         blocks.writerow(["time", "number", "elapsed_ms"])
-        rows = csv.writer(watch_file)
+        writer = csv.writer(watch_file)
         try:
-            while args.duration is None or time.monotonic() - started < args.duration:
-                cur = _sample(time.monotonic() - started, args.metrics, client, datadir, tail, blocks)
-                derived = derive(prev, cur)
-                if columns is None:
-                    columns = sorted(cur.series)
-                    rows.writerow(["time", "elapsed_s", "finalized", "store_bytes", "new_payload_sum", "new_payload_count", *columns, *derived])
-                payload = cur.new_payload or (None, None)
-                rows.writerow([meta.now(), round(cur.elapsed_s, 3), cur.finalized, cur.store_bytes, *payload, *(cur.series.get(c) for c in columns), *derived.values()])
+            for row in rows(_poll(args, datadir, client, tail, blocks)):
+                writer.writerow(row)
                 watch_file.flush()
                 blocks_file.flush()
-                prev = cur
-                time.sleep(max(0.0, args.interval - (time.monotonic() - started - cur.elapsed_s)))
         except KeyboardInterrupt:
             pass
     info["ended"] = meta.now()
@@ -213,8 +234,31 @@ def main(args: argparse.Namespace) -> int:
     return 0
 
 
-def _sample(elapsed_s: float, metrics_url: str, client: rpc.Client, datadir: str, tail: LogTail, blocks: Any) -> Sample:
-    snapshot = prom.scrape(metrics_url)
+def _poll(args: argparse.Namespace, datadir: str, client: rpc.Client, tail: LogTail, blocks: Any) -> Iterator[Sample | None]:
+    """Yields a sample every `--interval` seconds, for `--duration` seconds or until Ctrl-C, and
+    `None` for an interval in which `/metrics` does not answer."""
+    started = time.monotonic()
+    answered = True
+    while args.duration is None or time.monotonic() - started < args.duration:
+        elapsed_s = time.monotonic() - started
+        try:
+            snapshot = prom.scrape(args.metrics)
+        except (OSError, http.client.HTTPException) as error:
+            # The node is stopped or still starting. One line when it stops answering, so a wrong
+            # --metrics URL shows at once, and one when it answers again.
+            if answered:
+                print(f"{meta.now()} no answer from {args.metrics}, retrying: {error}", file=sys.stderr)
+            answered = False
+            yield None
+        else:
+            if not answered:
+                print(f"{meta.now()} {args.metrics} answers again", file=sys.stderr)
+            answered = True
+            yield _sample(elapsed_s, snapshot, client, datadir, tail, blocks)
+        time.sleep(max(0.0, args.interval - (time.monotonic() - started - elapsed_s)))
+
+
+def _sample(elapsed_s: float, snapshot: prom.Snapshot, client: rpc.Client, datadir: str, tail: LogTail, blocks: Any) -> Sample:
     series = {name: value for (name, labels), value in snapshot.items() if name.startswith(prom.FILTER_MAPS_PREFIX) and not labels}
     payload_sum, payload_count = snapshot.value(NEW_PAYLOAD + "_sum"), snapshot.value(NEW_PAYLOAD + "_count")
     try:

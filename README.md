@@ -196,7 +196,8 @@ The examples use the paths of the bench machine: datadir `/data/reth`, log direc
 1. Add `--filter-maps` to the node's flags.
 2. Restart the node.
 3. Start `watch` immediately. It records the build rate, the store size and the block times of
-   the catch-up.
+   the catch-up. Until the node answers on `/metrics`, `watch` writes no rows. It shows one line
+   on stderr when the node stops answering and one line when it answers again.
 
    ```sh
    python3 -m fmbench watch --mode index --phase catchup --log-file /data/logs/mainnet/reth.log
