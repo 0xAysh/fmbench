@@ -41,9 +41,11 @@ python3 -m fmbench <command> -h
 
 Each result goes to `results/<commit>/<run-id>/` with a `meta.json` (binary, commit, flags,
 mode, cache state, kernel, filesystem, CPU, RAM, query file hash). `report` reads one
-`results/<commit>/` and uses the latest finished run of each kind; the G7 tables compare the
-latest index-mode g7 run with the bloom and today runs of the same query file, `--limit` and
-`--reps`, so a newer smoke run is never compared with the matrix. The Reth 2.7.0 runs (mode
+`results/<commit>/` and uses the latest finished run of each kind; the G7, G1 and one-shot
+tables compare the latest index-mode run with the bloom and today runs of the same query file,
+`--limit` and `--reps`, so a newer smoke run is never compared with the matrix. D2 uses the warm
+G7 bloom run only when its query file comes from the one-shot's sample (same window and seed).
+The Reth 2.7.0 runs (mode
 `today`) land under that binary's commit: pass `--today results/<2.7.0 commit>/` to fill the
 today columns.
 

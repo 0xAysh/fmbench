@@ -13,9 +13,9 @@ WINDOWS = "reth_rpc_eth_filter_windows_total"
 FALLBACKS = "reth_rpc_eth_filter_fallbacks_total"
 
 
-def found(started, mode="index", spread=False, used=100, reps=25):
-    """A finished warm g7 run of one query file with `used` queries and `reps` repetitions."""
-    meta = {"command": "run", "mode": mode, "cache": "warm", "kind": "g7", "ended": "x", "started": started,
+def found(started, mode="index", spread=False, used=100, reps=25, kind="g7"):
+    """A finished warm run of one query file with `used` queries and `reps` repetitions."""
+    meta = {"command": "run", "mode": mode, "cache": "warm", "kind": kind, "ended": "x", "started": started,
             "spread": spread, "queries": {"sha256": "a"}, "queries_used": used, "reps": reps}
     return {"dir": started, "meta": meta}
 
@@ -248,10 +248,16 @@ class FellBackTest(unittest.TestCase):
         self.assertFalse(report.fell_back(sample.WILDCARD, {WINDOWS: {"index": 0, "bloom": 2}, FALLBACKS: {"": 0}}))
 
 
-class G7RunsTest(unittest.TestCase):
+class MatchedRunsTest(unittest.TestCase):
     def test_compares_the_latest_index_run_with_runs_of_the_same_queries_and_repetitions(self):
         matrix = (found("1"), found("2", mode="bloom"), found("3", mode="today"))
         smoke = found("4", mode="bloom", used=20, reps=1)
-        self.assertEqual(report.g7_runs([*matrix, smoke], "warm"), matrix)
-        self.assertEqual(report.g7_runs([found("1"), smoke], "warm"), (found("1"), None, None))
-        self.assertEqual(report.g7_runs([smoke], "warm"), (None, None, None))
+        self.assertEqual(report.matched_runs([*matrix, smoke], "g7"), matrix)
+        self.assertEqual(report.matched_runs([found("1"), smoke], "g7"), (found("1"), None, None))
+        self.assertEqual(report.matched_runs([smoke], "g7"), (None, None, None))
+
+    def test_pairs_g1_runs_of_the_same_query_file(self):
+        # G1 joins on query ids: a 1,000-query bloom run must not meet a 10,000-query index run.
+        index, bloom = found("1", used=10_000, reps=1, kind="g1"), found("2", mode="bloom", used=10_000, reps=1, kind="g1")
+        newer = found("3", mode="bloom", used=1_000, reps=1, kind="g1")
+        self.assertEqual(report.matched_runs([index, bloom, newer], "g1")[:2], (index, bloom))

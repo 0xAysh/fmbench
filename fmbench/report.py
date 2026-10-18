@@ -106,15 +106,15 @@ def spread_pair(runs: list[dict[str, Any]], mode: str, cache: str, judged: dict[
     return (base, repeat) if base else None
 
 
-def g7_runs(runs: list[dict[str, Any]], cache: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
-    """Returns the latest index g7 run of `cache` and the latest bloom and today g7 runs of the
-    same query file, query count and repetitions, each `None` when missing (all three without an
-    index run). A newer smoke run with `--limit` is never compared with the full matrix."""
-    index = pick(runs, "run", "index", cache, kind="g7")
+def matched_runs(runs: list[dict[str, Any]], kind: str, cache: str = "warm") -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    """Returns the latest index run of `kind` and `cache` and the latest bloom and today runs of
+    the same query file, query count and repetitions, each `None` when missing (all three without
+    an index run). A newer smoke run with `--limit` is never compared with the full matrix."""
+    index = pick(runs, "run", "index", cache, kind=kind)
     if index is None:
         return None, None, None
     same = _same_queries(index)
-    return index, pick(runs, "run", "bloom", cache, kind="g7", **same), pick(runs, "run", "today", cache, kind="g7", **same)
+    return index, pick(runs, "run", "bloom", cache, kind=kind, **same), pick(runs, "run", "today", cache, kind=kind, **same)
 
 
 def _same_queries(found: dict[str, Any]) -> dict[str, Any]:
@@ -390,7 +390,7 @@ class _Report:
         verdicts = []
         all_rows = []
         for cache in ("warm", "cold"):
-            found = g7_runs(self.runs, cache)
+            found = matched_runs(self.runs, "g7", cache)
             index, bloom, today = (seq_cells(run) for run in found)
             if index is None or found[0] is None:
                 continue
@@ -440,7 +440,7 @@ class _Report:
 
     def g1(self) -> None:
         self.heading("G1 correctness")
-        a, b = (pick(self.runs, "run", mode, kind="g1") for mode in ("index", "bloom"))
+        a, b, _ = matched_runs(self.runs, "g1")
         if a is None or b is None:
             self.verdicts["G1"] = NOT_MEASURED
             self.md += ["No g1 run in both index and bloom mode: **not measured**.", ""]
@@ -492,14 +492,13 @@ class _Report:
     def oneshot(self) -> None:
         self.heading("One-shot over the whole window (D2)")
         shots: dict[str, dict[str, tuple[dict[str, Any], float]]] = {}
-        window = None
-        for mode in ("index", "bloom"):
-            found = pick(self.runs, "run", mode, kind="oneshot")
+        index_run, bloom_run, _ = matched_runs(self.runs, "oneshot")
+        for mode, found in (("index", index_run), ("bloom", bloom_run)):
             if found is None:
                 continue
-            window = found["meta"].get("window") or window
             for line in meta.read_jsonl(os.path.join(found["dir"], "seq.jsonl")):
                 shots.setdefault(line["query_id"], {})[mode] = (line, found["meta"]["timeout_s"])
+        window = index_run["meta"].get("window") if index_run else None
         if window:
             self.md.append(f"Over the query file's window, {window[1] - window[0] + 1} blocks ({window[0]}..{window[1]}): "
                            "the indexed window less the sample's tail margin.")
@@ -517,10 +516,10 @@ class _Report:
         q1_id = next((query_id for query_id in sorted(shots) if query_id.startswith("Q1-")), None)
         bloom_width = self.gates["d2"]["bloom_width"]
         bloom_p50 = None
-        # The bloom run of the warm G7 table.
-        found = g7_runs(self.runs, "warm")[1]
-        if found and q1_id:
-            # The one-shot holds the first Q1 filter of g7.jsonl: the same filter index.
+        # The bloom run of the warm G7 table, if its g7.jsonl comes from the one-shot's sample: the
+        # one-shot holds the first Q1 filter of that file, the same filter index.
+        found = matched_runs(self.runs, "g7")[1]
+        if found and q1_id and index_run and all(found["meta"].get(k) == index_run["meta"].get(k) for k in ("window", "seed")):
             reference = f"Q1-w{bloom_width}-{q1_id.split('-')[2]}"
             lines = meta.read_jsonl(os.path.join(found["dir"], "seq.jsonl"))
             bloom_p50 = stats.percentile([line["latency_ms"] for line in lines if line["query_id"] == reference and line["error"] is None], 0.5)

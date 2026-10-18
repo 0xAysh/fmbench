@@ -155,6 +155,7 @@ def main(args: argparse.Namespace) -> int:
         kind=header.get("kind"),
         queries=meta.file_info(args.queries),
         window=header.get("window"),
+        seed=header.get("seed"),
         queries_used=len(queries),
         reps=args.reps,
         timeout_s=args.timeout,
