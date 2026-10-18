@@ -345,7 +345,7 @@ today columns.
 | Q6 | The Q1 filters near the end of the window | 1, 10, 100 | selective |
 | Q6d | The Q3 filters near the end of the window | 1, 10, 100 | dense |
 | Q7 | No address and no topic: all logs (the control) | 1, 10, 100 | equal |
-| Q8 | One factory `topic0` (for example a pool's `Swap`) with 50, 200 or 1,000 addresses | 500 to 100,000 | selective |
+| Q8 | One factory `topic0` (for example a pool's `Swap`) with 50, 200 or 1,000 addresses | 500 to 100,000 | dense |
 | Q9 | Wallet transfers: `Transfer` to or from a rare address | 500 to 100,000 | selective |
 
 `g7.jsonl` has 5 filters per class at each width. The kit drops a query whose estimated result
@@ -373,8 +373,8 @@ judge(ratio, limit, spread)
 
 | Type | Classes | Rule |
 |---|---|---|
-| selective | Q1, Q2, Q6, Q8, Q9 | p50 and p90 ratio at most 1.0. At 100,000 blocks or more, p50 ratio at most 0.5 |
-| dense | Q3, Q4, Q5, Q6d | p50 ratio at most 1.10 |
+| selective | Q1, Q2, Q6, Q9 | p50 and p90 ratio at most 1.0. At 100,000 blocks or more, p50 ratio at most 0.5 |
+| dense | Q3, Q4, Q5, Q6d, Q8 | p50 ratio at most 1.10 |
 | equal | Q7 | Pass when the p50 and p90 ratios are both `equal` to 1. Both paths use the header bloom for Q7 |
 
 A cell fails if one ratio fails. It passes if all ratios pass. Otherwise it is `equal`. The
