@@ -86,6 +86,7 @@ during the G8 load in both modes: the bloom-mode one is the reference of the ind
 starts `--tail-margin` blocks above the first indexed block, so both modes sweep the same range
 while the index tail moves, and ends 2,000 blocks below the index head. A restarted index node
 reads the receipts of its newest map group again, a bloom-mode node does not, so a cold query
-there would favour the index. Q6 and Q7 (the wildcard, which stays under the result cap only
-over a few blocks) run at 1, 10 and 100 blocks; the header of each query file lists the queries
+there would favour the index. Q6 and Q6d (the rare and the popular filters, judged by the
+selective and the dense rule) and Q7 (the wildcard, which stays under the result cap only over a
+few blocks) run at 1, 10 and 100 blocks; the header of each query file lists the queries
 the cap dropped (`dropped_by_cap`).

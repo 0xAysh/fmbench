@@ -93,9 +93,16 @@ class G7Test(unittest.TestCase):
         rows = report.g7_rows(report.cells(index), report.cells(bloom), {}, GATES)
         self.assertEqual([r["verdict"] for r in rows], ["pass", "equal"])
 
+    def test_the_popular_filters_near_the_head_take_the_dense_rule(self):
+        # 7 % slower: inside the dense band (1.048 to 1.155), above the selective one.
+        index = seq("Q6-w100-000", [107, 107]) + seq("Q6d-w100-000", [107, 107])
+        bloom = seq("Q6-w100-000", [100, 100]) + seq("Q6d-w100-000", [100, 100])
+        rows = report.g7_rows(report.cells(index), report.cells(bloom), {}, GATES)
+        self.assertEqual([(r["class"], r["verdict"]) for r in rows], [("Q6", "fail"), ("Q6d", "equal")])
+
     def test_lists_the_classes_without_a_cell(self):
         rows = report.g7_rows(report.cells(seq("Q1-w500-000", [10])), report.cells(seq("Q1-w500-000", [90])), {}, GATES)
-        self.assertEqual(report.missing_classes(rows, GATES), ["Q2", "Q3", "Q4", "Q5", "Q6", "Q7", "Q8", "Q9"])
+        self.assertEqual(report.missing_classes(rows, GATES), ["Q2", "Q3", "Q4", "Q5", "Q6", "Q6d", "Q7", "Q8", "Q9"])
 
 
 class RepetitionsTest(unittest.TestCase):

@@ -18,7 +18,7 @@ from typing import Any
 from fmbench import meta, prom, rpc, run, sample, stats
 
 # The heavy-user mix (weights per class).
-HEAVY = {"Q1": 20, "Q2": 15, "Q8": 15, "Q9": 20, "Q3": 10, "Q5": 10, "Q6": 10}
+HEAVY = {"Q1": 20, "Q2": 15, "Q8": 15, "Q9": 20, "Q3": 10, "Q5": 10, "Q6": 5, "Q6d": 5}
 # A query wider than this is never drawn (roadmap §1.8): one whole-window bloom query can outlast
 # a 120-second run and makes the bloom QPS meaningless.
 MAX_WIDTH = 100_000

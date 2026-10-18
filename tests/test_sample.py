@@ -177,14 +177,15 @@ class WalletTest(unittest.TestCase):
 
 
 class HeadAndWildcardTest(unittest.TestCase):
-    def test_q6_alternates_q1_and_q3_filters_and_q7_is_the_wildcard(self):
+    def test_q6_and_q6d_hold_the_q1_and_q3_filters_and_q7_is_the_wildcard(self):
         logs = [log(addr(n), topic(n)) for n in range(1, 7)]
         logs += [log(addr(100 + n), topic(100)) for n in range(10) for _ in range(5)]
         lookup = {key({"address": [addr(n)], "topics": []}): 1 for n in range(1, 7)}
         selection = sample.pick_filters(sample.tally([block(*logs)]), window_logs(lookup), random.Random(7))
 
         q1, q3 = selection.filters["Q1"], selection.filters["Q3"]
-        self.assertEqual(selection.filters["Q6"], [q1[0], q3[0], q1[1], q3[1], q1[2]])
+        self.assertEqual(selection.filters["Q6"], q1)
+        self.assertEqual(selection.filters["Q6d"], q3)
         self.assertEqual(selection.filters["Q7"], [sample.Pick({"topics": []}, 56.0)])
 
 
@@ -195,7 +196,7 @@ class G7Test(unittest.TestCase):
     def selection(self):
         rare = sample.Pick({"address": [addr(1)], "topics": []}, 0.0005, 41)
         dense = sample.Pick({"address": [addr(2)], "topics": []}, 30.0)
-        return sample.Selection({"Q1": [rare], "Q3": [dense], "Q6": [rare, dense]}, {})
+        return sample.Selection({"Q1": [rare], "Q3": [dense], "Q6": [rare], "Q6d": [dense]}, {})
 
     def test_every_query_ends_at_to_block_and_the_cap_drops_dense_widths(self):
         kept, dropped = sample.templates(self.selection(), [500, 100_000, "window"], WINDOW, max_logs=200_000)
@@ -209,11 +210,11 @@ class G7Test(unittest.TestCase):
                 ("Q1-wwindow-000", 1175, hex(23_800_000)),
                 ("Q3-w500-000", 15_000, hex(26_149_624)),
                 ("Q6-w1-000", 0, hex(26_150_123)),
-                ("Q6-w1-001", 30, hex(26_150_123)),
                 ("Q6-w10-000", 0, hex(26_150_114)),
-                ("Q6-w10-001", 300, hex(26_150_114)),
                 ("Q6-w100-000", 0, hex(26_150_024)),
-                ("Q6-w100-001", 3000, hex(26_150_024)),
+                ("Q6d-w1-000", 30, hex(26_150_123)),
+                ("Q6d-w10-000", 300, hex(26_150_114)),
+                ("Q6d-w100-000", 3000, hex(26_150_024)),
             ],
         )
         self.assertEqual({q["filter"]["toBlock"] for q in queries}, {hex(26_150_123)})

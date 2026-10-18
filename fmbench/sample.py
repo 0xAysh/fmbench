@@ -8,7 +8,6 @@ and Q9 filters over the whole window, the D2 condition).
 from __future__ import annotations
 
 import argparse
-import itertools
 import json
 import os
 import random
@@ -25,7 +24,7 @@ Width = Union[int, str]
 
 WINDOW = "window"
 
-CLASSES = ("Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7", "Q8", "Q9")
+CLASSES = ("Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q6d", "Q7", "Q8", "Q9")
 
 # `Transfer(address,address,uint256)`, shared by ERC-20 and ERC-721.
 TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -35,10 +34,11 @@ APPROVAL = "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"
 # The wildcard: a filter without an address or topic, which returns every log of its range. Reth
 # never looks it up in the index; the header bloom serves it on both paths.
 WILDCARD = "Q7"
-# Q6 (near the head) and the wildcard use their own widths; the matrix widths do not apply. The
-# wildcard stays under the result cap only over a few blocks.
+# Q6 and Q6d (the rare and the popular filters near the head) and the wildcard use their own
+# widths; the matrix widths do not apply. The wildcard stays under the result cap only over a few
+# blocks.
 NARROW_WIDTHS: tuple[Width, ...] = (1, 10, 100)
-NARROW_CLASSES = ("Q6", WILDCARD)
+NARROW_CLASSES = ("Q6", "Q6d", WILDCARD)
 # The filters per class.
 PER_CLASS = 5
 # A rare filter (Q1, Q9) has this many logs over the whole window.
@@ -164,9 +164,9 @@ def pick_filters(
             rate,
         )
 
-    # Q6 alternates the rare and the popular filters, so the head check covers both shapes.
-    head = [p for pair in itertools.zip_longest(filters["Q1"], filters["Q3"]) for p in pair if p]
-    filters["Q6"] = head[:PER_CLASS]
+    # The rare and the popular filters near the head get a cell each: the percentiles of one mixed
+    # cell would judge the popular filters by the selective rule.
+    filters["Q6"], filters["Q6d"] = filters["Q1"], filters["Q3"]
     filters[WILDCARD] = [Pick({"topics": []}, counts.logs * rate)]
     return Selection({c: filters[c] for c in CLASSES}, notes)
 
@@ -279,7 +279,7 @@ def templates(
     selection: Selection, widths: list[Width], window: tuple[int, int], max_logs: int
 ) -> tuple[list[Template], list[Template]]:
     """Returns every filter of every class at every width of its class (`widths`, or
-    `NARROW_WIDTHS` for Q6 and Q7), split by the result cap: the templates whose estimated logs
+    `NARROW_WIDTHS` for `NARROW_CLASSES`), split by the result cap: the templates whose estimated logs
     are at most `max_logs`, and the rest."""
     kept: list[Template] = []
     dropped: list[Template] = []
