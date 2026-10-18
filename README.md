@@ -114,8 +114,8 @@ run --mode index --queries queries/g7.jsonl --cache warm --reps 25
 
 | Command | Writes | For |
 |---|---|---|
-| `sample` | `queries/g7.jsonl`, `g1.jsonl`, `oneshot.jsonl` | The query files |
-| `run` | `seq.jsonl` | G7 (`g7.jsonl`), G1 (`g1.jsonl`), D2 (`oneshot.jsonl`) |
+| `sample` | `queries/g7.jsonl`, `g7-cold.jsonl`, `g1.jsonl`, `oneshot.jsonl` | The query files |
+| `run` | `seq.jsonl` | G7 (`g7.jsonl`, `g7-cold.jsonl`), G1 (`g1.jsonl`), D2 (`oneshot.jsonl`) |
 | `equal A B` | Exit code 1 for a difference | G1 |
 | `load` | `load.jsonl` | G8 |
 | `sweep` | `sweep.jsonl` | The backfill time |
@@ -260,8 +260,8 @@ The report of the box gates shows the G7 cells as `not measured`. This is correc
 
 ### 6. Measure the baseline
 
-Do these runs in each mode. Restart the node between two modes: change `--filter-maps` or the
-binary. In mode `today`, do only the one-shot and the G7 runs.
+Do these runs in index and bloom mode. Restart the node between two modes: change
+`--filter-maps` or the binary. In mode `today`, do only the one-shot and the warm G7 runs.
 
 1. Do the one-shot (D2) first:
 
@@ -269,26 +269,44 @@ binary. In mode `today`, do only the one-shot and the G7 runs.
    python3 -m fmbench run --mode index --queries queries/oneshot.jsonl --reps 1
    ```
 
-2. Do the G7 matrix, warm and cold. Repeat each run once with `--spread`. The repeat must use the
-   same query file, `--limit` and `--reps`.
+2. Do the warm G7 matrix. Repeat it once with `--spread`. The repeat must use the same query
+   file, `--limit` and `--reps`.
 
    ```sh
    python3 -m fmbench run --mode index --queries queries/g7.jsonl --cache warm --reps 25
    python3 -m fmbench run --mode index --queries queries/g7.jsonl --cache warm --reps 25 --spread
-   python3 -m fmbench run --mode index --queries queries/g7.jsonl --cache cold --reps 5
-   python3 -m fmbench run --mode index --queries queries/g7.jsonl --cache cold --reps 5 --spread
    ```
 
-   A cold run restarts the node before each repetition of each query. Calculate its time before
+3. Do the cold G7 runs, in index and bloom mode only:
+
+   1. Add `--engine.persistence-threshold 0` to the node's flags, in both modes.
+   2. Run the cold file and its `--spread` repeat:
+
+      ```sh
+      python3 -m fmbench run --mode index --queries queries/g7-cold.jsonl --cache cold --reps 5
+      python3 -m fmbench run --mode index --queries queries/g7-cold.jsonl --cache cold --reps 5 --spread
+      ```
+
+   3. Remove `--engine.persistence-threshold 0` before the next runs.
+
+   A cold run restarts the node before each repetition of each query. After a short stop, the
+   node writes nothing to disk until about 45 new blocks wait (the default threshold is 50).
+   The cold wait needs that write, so one repetition takes about 10 minutes on mainnet. With
+   threshold 0, the node writes each block when it gets it, so the first write comes after the
+   first new block. Do not use a threshold from 1 to 35: with the default state masking
+   (`--engine.num-state-masking-blocks 30`), Reth refuses to start.
+
+   `g7-cold.jsonl` has one filter for each class and width: the first filter that the result cap
+   keeps. Thus a cold run has one fifth of the queries of `g7.jsonl`. Calculate its time before
    you start it: queries × repetitions × the restart time of your node.
 
-3. Do G1. G1 needs 10,000 queries or more, and `g1.jsonl` has 10,000:
+4. Do G1. G1 needs 10,000 queries or more, and `g1.jsonl` has 10,000:
 
    ```sh
    python3 -m fmbench run --mode index --queries queries/g1.jsonl --reps 1
    ```
 
-4. Do G8. Start `watch` in a second terminal for G4 under load. Use the same `watch` in bloom
+5. Do G8. Start `watch` in a second terminal for G4 under load. Use the same `watch` in bloom
    mode: it is the reference of the index-mode load.
 
    ```sh
@@ -296,7 +314,7 @@ binary. In mode `today`, do only the one-shot and the G7 runs.
    python3 -m fmbench watch --mode index --phase load --log-file /data/logs/mainnet/reth.log --duration 600
    ```
 
-5. Do the sweeps, in chunks of 500, 2,000, 10,000 and 100,000 blocks:
+6. Do the sweeps, in chunks of 500, 2,000, 10,000 and 100,000 blocks:
 
    ```sh
    python3 -m fmbench sweep --mode index --queries queries/g7.jsonl --query Q1-w100000-000 --chunk 2000
@@ -333,6 +351,7 @@ today columns.
 is more than 200,000 logs (`--max-logs`). Thus the dense classes stop at narrow widths. The header
 of each query file lists the dropped queries (`dropped_by_cap`).
 
+`g7-cold.jsonl` has the first kept filter of each class at each width, for the cold runs.
 `g1.jsonl` has 10,000 random queries: a random class, filter, width and position in the window.
 `oneshot.jsonl` has the first Q1 filter and the first Q9 filter over the whole indexed window.
 
@@ -371,9 +390,11 @@ A cell is `not measured` in these conditions:
 `report` reads one `results/<commit>/` directory. It pairs the runs in this way:
 
 - It uses the latest finished index-mode run of each kind.
-- It compares that run only with bloom and today runs of the same query file, `--limit` and
-  `--reps`. Thus a short test run never replaces the full matrix.
-- It takes the spread only from a `--spread` repeat of the same queries.
+- It compares that run only with bloom and today runs of the same query file, `--limit`,
+  `--reps` and node flags. Thus a short test run never replaces the full matrix. The node flags
+  do not include `--filter-maps` and `--filter-maps.history`.
+- It takes the spread only from a `--spread` repeat of the same queries and node flags.
+- G8 and G4 compare `load` and `watch` runs only when they have the same node flags.
 - D2 uses the warm G7 bloom run only if that run comes from the same `sample` (same window and
   seed) and has 5 repetitions or more.
 
@@ -405,6 +426,8 @@ The kit waits for these conditions for these reasons:
   1,000 blocks. The head margin of `sample` keeps the queries out of those blocks.
 - After the first step, the indexer renders only newly finalized blocks, as in a warm run. Thus
   `cold` does not wait for the finalized block to move.
+- The first write after a short stop comes only when about 45 new blocks wait. Use
+  `--engine.persistence-threshold 0` for cold runs (see [step 6](#6-measure-the-baseline)).
 
 ## Results
 
