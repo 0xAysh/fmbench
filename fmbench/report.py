@@ -94,13 +94,15 @@ def _relative(x: float | None, y: float | None) -> float | None:
     return abs(x - y) / min(x, y)
 
 
-def spread_pair(runs: list[dict[str, Any]], mode: str, cache: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    """Returns the latest g7 run of `mode` and `cache` that the latest spread run repeats (the
-    same query file, query count and repetitions) and that spread run, or `None`."""
-    repeat = pick(runs, "run", mode, cache, spread=True, kind="g7")
+def spread_pair(runs: list[dict[str, Any]], mode: str, cache: str, judged: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Returns the latest g7 run of `mode` and `cache` and the latest spread run that repeats it,
+    both of the queries of `judged` (the same query file, query count and repetitions), or `None`.
+    A spread run of other queries never sets the band of `judged`'s table."""
+    same = _same_queries(judged)
+    repeat = pick(runs, "run", mode, cache, spread=True, kind="g7", **same)
     if repeat is None:
         return None
-    base = pick(runs, "run", mode, cache, kind="g7", **_same_queries(repeat))
+    base = pick(runs, "run", mode, cache, kind="g7", **same)
     return (base, repeat) if base else None
 
 
@@ -366,13 +368,13 @@ class _Report:
     def heading(self, title: str) -> None:
         self.md += [f"## {title} (commit {self.commit})", ""]
 
-    def spread(self, cache: str) -> dict[tuple[str, sample.Width], tuple[float, float]]:
-        """The per-cell spread of one cache state (D4): each spread run against the run it
-        repeats, the larger of the two modes."""
+    def spread(self, cache: str, judged: dict[str, Any]) -> dict[tuple[str, sample.Width], tuple[float, float]]:
+        """The per-cell spread of one cache state (D4) for the G7 table of `judged`: each spread
+        run of its queries against the run it repeats, the larger of the two modes."""
         merged: dict[tuple[str, sample.Width], tuple[float, float]] = {}
         sources = []
         for mode in ("index", "bloom"):
-            pair = spread_pair(self.runs, mode, cache)
+            pair = spread_pair(self.runs, mode, cache, judged)
             if pair is None:
                 continue
             sources.append(mode)
@@ -388,11 +390,12 @@ class _Report:
         verdicts = []
         all_rows = []
         for cache in ("warm", "cold"):
-            index, bloom, today = (seq_cells(found) for found in g7_runs(self.runs, cache))
-            if index is None:
+            found = g7_runs(self.runs, cache)
+            index, bloom, today = (seq_cells(run) for run in found)
+            if index is None or found[0] is None:
                 continue
             self.heading(f"G7 single-query latency, {cache}")
-            rows = g7_rows(index, bloom or {}, self.spread(cache), self.gates, today)
+            rows = g7_rows(index, bloom or {}, self.spread(cache, found[0]), self.gates, today)
             verdicts += [row["verdict"] for row in rows]
             all_rows += rows
             self.md += _table(

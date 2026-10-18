@@ -107,11 +107,13 @@ class SpreadTest(unittest.TestCase):
         self.assertAlmostEqual(spreads[("Q1", 500)][1], 0.10)
         self.assertEqual(report.spreads(a, b, floor=0.05)[("Q3", 500)], (0.05, 0.05))
 
-    def test_pairs_the_spread_run_with_a_run_of_the_same_queries_and_repetitions(self):
-        base, repeat = found("1"), found("4", spread=True)
-        runs = [base, found("2", used=20), found("3", reps=1), repeat]
-        self.assertEqual(report.spread_pair(runs, "index", "warm"), (base, repeat))
-        self.assertIsNone(report.spread_pair([found("2", used=20), repeat], "index", "warm"))
+    def test_pairs_the_spread_runs_of_the_judged_queries_and_repetitions(self):
+        base, repeat = found("1"), found("2", spread=True)
+        smoke, smoke_repeat = found("3", used=20, reps=1), found("4", spread=True, used=20, reps=1)
+        runs = [base, repeat, smoke, smoke_repeat]
+        self.assertEqual(report.spread_pair(runs, "index", "warm", base), (base, repeat))
+        self.assertIsNone(report.spread_pair([base, smoke_repeat], "index", "warm", base))
+        self.assertIsNone(report.spread_pair([smoke, repeat], "index", "warm", base))
 
     def test_a_ratio_inside_a_wider_spread_is_equal(self):
         self.assertEqual(report.g7_verdict("selective", 500, 0.93, 0.93, 0.08, 0.08, GATES), "equal")
