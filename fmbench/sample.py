@@ -53,6 +53,12 @@ DEFAULT_MAX_LOGS = 200_000
 # window's first blocks leave the index within hours and `run` refuses the file. 100,000 blocks
 # is about 14 days of chain growth.
 DEFAULT_TAIL_MARGIN = 100_000
+# The sampled window ends this many blocks below the index head. A restarted index node renders
+# the map group in progress again (32 maps, about 550 to 770 mainnet blocks) and reads its
+# receipts, which a bloom-mode node does not, so a cold query over those blocks would favour the
+# index. Every G7 query ends at the window's last block and the group in progress only moves up,
+# so no later restart reads a query's blocks while a map averages fewer than 62 blocks.
+HEAD_MARGIN = 2_000
 # The address counts of the Q8 filters.
 MANY_ADDRESSES = (50, 200, 1000)
 # The most whole-window `eth_getLogs` checks per rare class. Rare candidates pass often (an
@@ -429,9 +435,9 @@ def main(args: argparse.Namespace) -> int:
     if indexed is None:
         raise SystemExit("the node reports no indexed window: run sample against the node in index mode once it is indexed")
     first, last = indexed
-    window = (first + args.tail_margin, last)
+    window = (first + args.tail_margin, last - HEAD_MARGIN)
     if window[0] > window[1]:
-        raise SystemExit(f"the indexed window {first}..{last} is shorter than --tail-margin {args.tail_margin}")
+        raise SystemExit(f"the indexed window {first}..{last} is shorter than --tail-margin {args.tail_margin} plus the head margin {HEAD_MARGIN}")
     paths = {kind: os.path.join(args.out, f"{kind}.jsonl") for kind in ("g7", "g1", "oneshot")}
     existing = [path for path in paths.values() if os.path.exists(path)]
     if existing:

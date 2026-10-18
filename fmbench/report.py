@@ -510,7 +510,7 @@ class _Report:
         window = index_run["meta"].get("window") if index_run else None
         if window:
             self.md.append(f"Over the query file's window, {window[1] - window[0] + 1} blocks ({window[0]}..{window[1]}): "
-                           "the indexed window less the sample's tail margin.")
+                           "the indexed window less the sample's tail and head margins.")
         for query_id, by_mode in sorted(shots.items()):
             parts = []
             for mode, (line, timeout_s) in sorted(by_mode.items()):
