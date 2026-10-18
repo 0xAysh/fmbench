@@ -21,6 +21,8 @@ PASS, FAIL, EQUAL, NOT_MEASURED = "pass", "fail", "equal", "not measured"
 SEVERITY = (FAIL, NOT_MEASURED, EQUAL, PASS)
 # The verdict of a G4 row that the others are measured against.
 REFERENCE = "reference"
+# Roadmap §1.4: a G7 verdict, and the D2 bloom reference, need at least this many repetitions.
+REPS_MIN = 5
 DEFAULT_GATES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gates.json")
 # The counters the tables show per mode, as mean per request over both paths.
 WORK = ("headers_read", "receipt_sets_read", "matching_blocks", "logs")
@@ -391,11 +393,18 @@ class _Report:
         all_rows = []
         for cache in ("warm", "cold"):
             found = matched_runs(self.runs, "g7", cache)
+            judged = found[0]
             index, bloom, today = (seq_cells(run) for run in found)
-            if index is None or found[0] is None:
+            if judged is None or index is None:
                 continue
             self.heading(f"G7 single-query latency, {cache}")
-            rows = g7_rows(index, bloom or {}, self.spread(cache, found[0]), self.gates, today)
+            used, reps = judged["meta"]["queries_used"], judged["meta"]["reps"]
+            self.md += [f"The index run `{os.path.basename(judged['dir'])}`: `{judged['meta']['queries']['file']}`, {used} queries × {reps} repetitions, "
+                        "against the bloom and today runs of the same queries.", ""]
+            rows = g7_rows(index, bloom or {}, self.spread(cache, judged), self.gates, today)
+            if reps < REPS_MIN:
+                for row in rows:
+                    row["verdict"], row["note"] = NOT_MEASURED, f"{reps} of the {REPS_MIN} repetitions a verdict needs"
             verdicts += [row["verdict"] for row in rows]
             all_rows += rows
             self.md += _table(
@@ -516,10 +525,12 @@ class _Report:
         q1_id = next((query_id for query_id in sorted(shots) if query_id.startswith("Q1-")), None)
         bloom_width = self.gates["d2"]["bloom_width"]
         bloom_p50 = None
-        # The bloom run of the warm G7 table, if its g7.jsonl comes from the one-shot's sample: the
-        # one-shot holds the first Q1 filter of that file, the same filter index.
+        # The bloom run of the warm G7 table, if it has the repetitions of a verdict and its
+        # g7.jsonl comes from the one-shot's sample: the one-shot holds the first Q1 filter of that
+        # file, the same filter index.
         found = matched_runs(self.runs, "g7")[1]
-        if found and q1_id and index_run and all(found["meta"].get(k) == index_run["meta"].get(k) for k in ("window", "seed")):
+        if (found and q1_id and index_run and found["meta"]["reps"] >= REPS_MIN
+                and all(found["meta"].get(k) == index_run["meta"].get(k) for k in ("window", "seed"))):
             reference = f"Q1-w{bloom_width}-{q1_id.split('-')[2]}"
             lines = meta.read_jsonl(os.path.join(found["dir"], "seq.jsonl"))
             bloom_p50 = stats.percentile([line["latency_ms"] for line in lines if line["query_id"] == reference and line["error"] is None], 0.5)

@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 import unittest
 
 from fmbench import report, sample
@@ -16,7 +17,7 @@ FALLBACKS = "reth_rpc_eth_filter_fallbacks_total"
 def found(started, mode="index", spread=False, used=100, reps=25, kind="g7"):
     """A finished warm run of one query file with `used` queries and `reps` repetitions."""
     meta = {"command": "run", "mode": mode, "cache": "warm", "kind": kind, "ended": "x", "started": started,
-            "spread": spread, "queries": {"sha256": "a"}, "queries_used": used, "reps": reps}
+            "spread": spread, "queries": {"file": f"{kind}.jsonl", "sha256": "a"}, "queries_used": used, "reps": reps}
     return {"dir": started, "meta": meta}
 
 
@@ -95,6 +96,21 @@ class G7Test(unittest.TestCase):
     def test_lists_the_classes_without_a_cell(self):
         rows = report.g7_rows(report.cells(seq("Q1-w500-000", [10])), report.cells(seq("Q1-w500-000", [90])), {}, GATES)
         self.assertEqual(report.missing_classes(rows, GATES), ["Q2", "Q3", "Q4", "Q5", "Q6", "Q7", "Q8", "Q9"])
+
+
+class RepetitionsTest(unittest.TestCase):
+    def test_a_g7_run_under_5_repetitions_gets_no_verdict(self):
+        with tempfile.TemporaryDirectory() as root:
+            for run, latency in ((found("1", used=1, reps=1), 10), (found("2", mode="bloom", used=1, reps=1), 90)):
+                os.makedirs(os.path.join(root, run["dir"]))
+                with open(os.path.join(root, run["dir"], "meta.json"), "w") as file:
+                    json.dump(run["meta"], file)
+                with open(os.path.join(root, run["dir"], "seq.jsonl"), "w") as file:
+                    file.writelines(json.dumps(line) + "\n" for line in seq("Q1-w500-000", [latency]))
+            md, _ = report.build(root, GATES)
+        self.assertIn("The index run `1`: `g7.jsonl`, 1 queries × 1 repetitions, against the bloom and today runs of the same queries.", md)
+        self.assertIn("| not measured | 1 of the 5 repetitions a verdict needs |", md)
+        self.assertIn("| G7 | not measured |", md)
 
 
 class SpreadTest(unittest.TestCase):
