@@ -98,9 +98,9 @@ def _relative(x: float | None, y: float | None) -> float | None:
 
 def spread_pair(runs: list[dict[str, Any]], mode: str, cache: str, judged: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """Returns the latest g7 run of `mode` and `cache` and the latest spread run that repeats it,
-    both of the queries of `judged` (the same query file, query count and repetitions), or `None`.
-    A spread run of other queries never sets the band of `judged`'s table."""
-    same = _same_queries(judged)
+    both of the queries and node flags of `judged` (`_same_setup`), or `None`. A spread run of
+    other queries never sets the band of `judged`'s table."""
+    same = _same_setup(judged)
     repeat = pick(runs, "run", mode, cache, spread=True, kind="g7", **same)
     if repeat is None:
         return None
@@ -110,19 +110,45 @@ def spread_pair(runs: list[dict[str, Any]], mode: str, cache: str, judged: dict[
 
 def matched_runs(runs: list[dict[str, Any]], kind: str, cache: str = "warm") -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
     """Returns the latest index run of `kind` and `cache` and the latest bloom and today runs of
-    the same query file, query count and repetitions, each `None` when missing (all three without
-    an index run). A newer smoke run with `--limit` is never compared with the full matrix."""
+    the same setup (`_same_setup`), each `None` when missing (all three without an index run). A
+    newer smoke run with `--limit` is never compared with the full matrix."""
     index = pick(runs, "run", "index", cache, kind=kind)
     if index is None:
         return None, None, None
-    same = _same_queries(index)
+    same = _same_setup(index)
     return index, pick(runs, "run", "bloom", cache, kind=kind, **same), pick(runs, "run", "today", cache, kind=kind, **same)
 
 
-def _same_queries(found: dict[str, Any]) -> dict[str, Any]:
+def g8_runs(runs: list[dict[str, Any]]) -> dict[str, dict[str, Any] | None]:
+    """Returns the latest index-mode `load` run and the latest bloom and today `load` runs with
+    its node flags, by mode."""
+    index = pick(runs, "load", "index")
+    same = _same_node(index) if index else {}
+    return {"index": index, **{mode: pick(runs, "load", mode, **same) for mode in ("bloom", "today")}}
+
+
+def g4_runs(runs: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any] | None]:
+    """Returns the `watch` run of each G4 row by (phase, mode): the latest run of each measured
+    row, and the latest run of its reference with the measured run's node flags."""
+    found: dict[tuple[str, str], dict[str, Any] | None] = {}
+    for phase, mode, reference in G4_PHASES:
+        if reference is not None:
+            measured = found[(phase, mode)] = pick(runs, "watch", mode, phase=phase)
+            found[reference] = pick(runs, "watch", reference[1], phase=reference[0], **(_same_node(measured) if measured else {}))
+    return found
+
+
+def _same_setup(found: dict[str, Any]) -> dict[str, Any]:
     """Returns the meta fields that a run compared with `found` must match: the query file, the
-    query count and the repetitions."""
-    return {key: found["meta"][key] for key in ("queries", "queries_used", "reps")}
+    query count, the repetitions and the node flags."""
+    return {**_same_node(found), **{key: found["meta"][key] for key in ("queries", "queries_used", "reps")}}
+
+
+def _same_node(found: dict[str, Any]) -> dict[str, Any]:
+    """Returns the node flags apart from the FilterMaps ones (`meta.node_flags`), which a run
+    compared with `found` must match: a flag such as `--engine.persistence-threshold` changes
+    the node's disk writes during a query."""
+    return {"node_flags": found["meta"].get("node_flags")}
 
 
 def fell_back(cls: str, counters: dict[str, dict[str, float]]) -> bool:
@@ -400,7 +426,7 @@ class _Report:
             self.heading(f"G7 single-query latency, {cache}")
             used, reps = judged["meta"]["queries_used"], judged["meta"]["reps"]
             self.md += [f"The index run `{os.path.basename(judged['dir'])}`: `{judged['meta']['queries']['file']}`, {used} queries × {reps} repetitions, "
-                        "against the bloom and today runs of the same queries.", ""]
+                        "against the bloom and today runs of the same queries and node flags.", ""]
             rows = g7_rows(index, bloom or {}, self.spread(cache, judged), self.gates, today)
             if reps < REPS_MIN:
                 for row in rows:
@@ -429,8 +455,7 @@ class _Report:
 
     def g8(self) -> None:
         summaries: dict[str, dict[int, dict[str, Any]]] = {}
-        for mode in ("index", "bloom", "today"):
-            found = pick(self.runs, "load", mode)
+        for mode, found in g8_runs(self.runs).items():
             lines = meta.read_jsonl(os.path.join(found["dir"], "load.jsonl")) if found else []
             summaries[mode] = {line["clients"]: line for line in lines if line.get("summary")}
             for clients, line in sorted(summaries[mode].items()):
@@ -445,7 +470,7 @@ class _Report:
         self.verdicts["G8"] = worst([row[-1] for row in rows])
         self.heading("G8 throughput, heavy mix")
         self.md += _table(["clients", "index QPS", "bloom QPS", "index p99 ms", "bloom p99 ms", "QPS ratio", "p99 ratio", "verdict"], rows)
-        self.md += [f"A flagged client (above {load.CPU_FLAG:.0%} of a core) or any request that was not `ok` makes a row `not measured`. G8 also needs G4 under load.", ""]
+        self.md += [f"A flagged client (above {load.CPU_FLAG:.0%} of a core) or any request that was not `ok` makes a row `not measured`. The bloom and today loads are the latest with the index load's node flags. G8 also needs G4 under load.", ""]
 
     def g1(self) -> None:
         self.heading("G1 correctness")
@@ -465,16 +490,16 @@ class _Report:
         self.md += [f"- {d}" for d in differences] + [""]
 
     def g4(self) -> None:
-        block_ms = {}
-        for phase, mode, _ in G4_PHASES:
-            found = pick(self.runs, "watch", mode, phase=phase)
-            block_ms[(phase, mode)] = [float(row["elapsed_ms"]) for row in read_csv(os.path.join(found["dir"], "blocks.csv"))] if found else []
+        block_ms = {
+            key: [float(row["elapsed_ms"]) for row in read_csv(os.path.join(found["dir"], "blocks.csv"))] if found else []
+            for key, found in g4_runs(self.runs).items()
+        }
         rows = g4_rows(block_ms, self.gates)
         self.verdicts["G4"] = worst([row[-1] for row in rows if row[-1] != REFERENCE])
         self.heading("G4 node cost: block execution time")
         self.md += _table(["phase", "mode", "blocks", "p50 ms", "p99 ms", "p50 ratio", "p99 ratio", "verdict"], rows)
         limit = self.gates["g4"]["p50_ratio_max"]
-        self.md += [f"The catch-up is measured against the index-off phase, the index-mode load against the same load in bloom mode. "
+        self.md += [f"The catch-up is measured against the index-off phase, the index-mode load against the same load in bloom mode, each with the same node flags. "
                     f"The limit is {limit} × or 1 + the spread floor, whichever is larger.", ""]
 
     def sweeps(self) -> None:

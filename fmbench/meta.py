@@ -96,6 +96,21 @@ def check_mode(mode: str, cmdline: list[str]) -> None:
         raise MetaError(f"mode {mode!r}, but the node runs {state} --filter-maps: {' '.join(cmdline)}")
 
 
+def node_flags(cmdline: list[str]) -> list[str]:
+    """Returns the node's command line without the binary and the FilterMaps flags
+    (`--filter-maps`, `--filter-maps.<name> [value]`): the setup that two compared runs share,
+    since the modes differ only in the index."""
+    flags: list[str] = []
+    args = iter(cmdline[1:])
+    for item in args:
+        if item.startswith("--filter-maps."):
+            if "=" not in item:
+                next(args, None)
+        elif item != "--filter-maps" and not item.startswith("--filter-maps="):
+            flags.append(item)
+    return flags
+
+
 def collect(command: str, mode: str, cache: str, unit: str, **extra: Any) -> dict[str, Any]:
     """Returns the `meta.json` of a run that starts now."""
     info = node(unit)
@@ -106,6 +121,7 @@ def collect(command: str, mode: str, cache: str, unit: str, **extra: Any) -> dic
         "mode": mode,
         "cache": cache,
         **info,
+        "node_flags": node_flags(info["cmdline"]),
         "datadir": datadir,
         "filesystem": _run(["findmnt", "-n", "-o", "TARGET,SOURCE,FSTYPE,OPTIONS", "-T", datadir]) if datadir else None,
         "uname": _run(["uname", "-a"]),

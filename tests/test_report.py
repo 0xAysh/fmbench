@@ -14,10 +14,11 @@ WINDOWS = "reth_rpc_eth_filter_windows_total"
 FALLBACKS = "reth_rpc_eth_filter_fallbacks_total"
 
 
-def found(started, mode="index", spread=False, used=100, reps=25, kind="g7"):
-    """A finished warm run of one query file with `used` queries and `reps` repetitions."""
-    meta = {"command": "run", "mode": mode, "cache": "warm", "kind": kind, "ended": "x", "started": started,
-            "spread": spread, "queries": {"file": f"{kind}.jsonl", "sha256": "a"}, "queries_used": used, "reps": reps}
+def found(started, mode="index", spread=False, used=100, reps=25, kind="g7", command="run", flags=("node",), **extra):
+    """A finished warm run of one query file with `used` queries and `reps` repetitions, on a node
+    with `flags` (its `node_flags`)."""
+    meta = {"command": command, "mode": mode, "cache": "warm", "kind": kind, "ended": "x", "started": started, "spread": spread,
+            "queries": {"file": f"{kind}.jsonl", "sha256": "a"}, "queries_used": used, "reps": reps, "node_flags": list(flags), **extra}
     return {"dir": started, "meta": meta}
 
 
@@ -115,7 +116,7 @@ class RepetitionsTest(unittest.TestCase):
                 with open(os.path.join(root, run["dir"], "seq.jsonl"), "w") as file:
                     file.writelines(json.dumps(line) + "\n" for line in seq("Q1-w500-000", [latency]))
             md, _ = report.build(root, GATES)
-        self.assertIn("The index run `1`: `g7.jsonl`, 1 queries × 1 repetitions, against the bloom and today runs of the same queries.", md)
+        self.assertIn("The index run `1`: `g7.jsonl`, 1 queries × 1 repetitions, against the bloom and today runs of the same queries and node flags.", md)
         self.assertIn("| not measured | 1 of the 5 repetitions a verdict needs |", md)
         self.assertIn("| G7 | not measured |", md)
 
@@ -279,8 +280,37 @@ class MatchedRunsTest(unittest.TestCase):
         self.assertEqual(report.matched_runs([found("1"), smoke], "g7"), (found("1"), None, None))
         self.assertEqual(report.matched_runs([smoke], "g7"), (None, None, None))
 
+    def test_pairs_runs_of_the_same_node_flags_only(self):
+        # A cold index run on a low persistence threshold must not meet a bloom run on the default.
+        low = ("node", "--engine.persistence-threshold", "0")
+        index, bloom = found("1", flags=low), found("2", mode="bloom", flags=low)
+        default = found("3", mode="bloom")
+        self.assertEqual(report.matched_runs([index, bloom, default], "g7")[:2], (index, bloom))
+        self.assertEqual(report.matched_runs([index, default], "g7")[:2], (index, None))
+
     def test_pairs_g1_runs_of_the_same_query_file(self):
         # G1 joins on query ids: a 1,000-query bloom run must not meet a 10,000-query index run.
         index, bloom = found("1", used=10_000, reps=1, kind="g1"), found("2", mode="bloom", used=10_000, reps=1, kind="g1")
         newer = found("3", mode="bloom", used=1_000, reps=1, kind="g1")
         self.assertEqual(report.matched_runs([index, bloom, newer], "g1")[:2], (index, bloom))
+
+
+class G8RunsTest(unittest.TestCase):
+    def test_pairs_the_loads_with_the_node_flags_of_the_index_load(self):
+        index = found("1", command="load")
+        bloom = found("2", mode="bloom", command="load")
+        other = found("3", mode="bloom", command="load", flags=("node", "--engine.persistence-threshold", "0"))
+        self.assertEqual(report.g8_runs([index, bloom, other]), {"index": index, "bloom": bloom, "today": None})
+
+
+class G4RunsTest(unittest.TestCase):
+    def test_takes_each_reference_with_the_node_flags_of_its_measured_run(self):
+        catchup = found("1", command="watch", phase="catchup")
+        off = found("2", mode="bloom", command="watch", phase="off")
+        off_other = found("3", mode="bloom", command="watch", phase="off", flags=("node", "--engine.persistence-threshold", "0"))
+        load_index = found("4", command="watch", phase="load")
+        load_bloom = found("5", mode="bloom", command="watch", phase="load")
+        self.assertEqual(
+            report.g4_runs([catchup, off, off_other, load_index, load_bloom]),
+            {("catchup", "index"): catchup, ("off", "bloom"): off, ("load", "index"): load_index, ("load", "bloom"): load_bloom},
+        )
