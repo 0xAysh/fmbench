@@ -121,7 +121,6 @@ def collect(command: str, mode: str, cache: str, unit: str, **extra: Any) -> dic
         "mode": mode,
         "cache": cache,
         **info,
-        "node_flags": node_flags(info["cmdline"]),
         "datadir": datadir,
         "filesystem": _run(["findmnt", "-n", "-o", "TARGET,SOURCE,FSTYPE,OPTIONS", "-T", datadir]) if datadir else None,
         "uname": _run(["uname", "-a"]),

@@ -145,9 +145,9 @@ def _same_setup(found: dict[str, Any]) -> dict[str, Any]:
 
 
 def _same_node(found: dict[str, Any]) -> dict[str, Any]:
-    """Returns the node flags apart from the FilterMaps ones (`meta.node_flags`), which a run
-    compared with `found` must match: a flag such as `--engine.persistence-threshold` changes
-    the node's disk writes during a query."""
+    """Returns the node flags apart from the FilterMaps ones (`load_runs`), which a run compared
+    with `found` must match: a flag such as `--engine.persistence-threshold` changes the node's
+    disk writes during a query."""
     return {"node_flags": found["meta"].get("node_flags")}
 
 
@@ -327,13 +327,16 @@ def worst(verdicts: list[str]) -> str:
 
 
 def load_runs(root: str) -> list[dict[str, Any]]:
-    """Returns every run directory under `root` (one commit) with its `meta.json`."""
+    """Returns every run directory under `root` (one commit) with its `meta.json`, plus the
+    run's `node_flags` (`meta.node_flags` of its command line) for the pairing."""
     runs = []
     for name in sorted(os.listdir(root)):
         path = os.path.join(root, name, "meta.json")
         if os.path.isfile(path):
             with open(path) as file:
-                runs.append({"dir": os.path.dirname(path), "meta": json.load(file)})
+                info = json.load(file)
+            info["node_flags"] = meta.node_flags(info.get("cmdline", []))
+            runs.append({"dir": os.path.dirname(path), "meta": info})
     return runs
 
 

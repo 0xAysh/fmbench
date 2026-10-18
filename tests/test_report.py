@@ -295,6 +295,15 @@ class MatchedRunsTest(unittest.TestCase):
         self.assertEqual(report.matched_runs([index, bloom, newer], "g1")[:2], (index, bloom))
 
 
+class LoadRunsTest(unittest.TestCase):
+    def test_derives_the_node_flags_from_the_command_line(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "run-1"))
+            with open(os.path.join(root, "run-1", "meta.json"), "w") as file:
+                json.dump({"cmdline": ["/data/bin/reth", "node", "--filter-maps", "--chain", "mainnet"]}, file)
+            self.assertEqual(report.load_runs(root)[0]["meta"]["node_flags"], ["node", "--chain", "mainnet"])
+
+
 class G8RunsTest(unittest.TestCase):
     def test_pairs_the_loads_with_the_node_flags_of_the_index_load(self):
         index = found("1", command="load")
