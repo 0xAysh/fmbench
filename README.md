@@ -20,11 +20,14 @@ python3 -m fmbench <command> -h
   `--log.file.format json` (block times come from the JSON file log).
 - `cold` and `run --cache cold` stop the unit, drop the page cache and start it, through
   `sudo -n` when not root, then wait until the node is back at the chain tip (latest block at
-  most 24 s old) and, in index mode, the indexer has finished a step since the start
-  (`reth_filter_maps_step_duration_seconds_count`), with no failed step
-  (`reth_filter_maps_failures`) and its head back at its value before the stop. That first step
-  renders the map in progress again; later steps render only newly finalized blocks, as in a warm
-  run, so `cold` does not wait for finality. A failed step stops `cold` with an error.
+  most 24 s old) and it has persisted blocks since the start
+  (`reth_consensus_engine_beacon_persistence_duration_count`: the catch-up is written in one
+  batch, which a query must not overlap). In index mode it also waits until the indexer has
+  finished a step since the start (`reth_filter_maps_step_duration_seconds_count`), with no failed
+  step (`reth_filter_maps_failures`) and its head back at its value before the stop. That first
+  step renders the map group in progress again (up to 1,000 blocks per step); later steps render
+  only newly finalized blocks, as in a warm run, so `cold` does not wait for finality. A failed
+  step stops `cold` with an error.
 
 ## Commands
 

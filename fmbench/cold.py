@@ -21,6 +21,9 @@ PROBE_TIMEOUT_S = 5
 # The node has caught up when its latest block is at most this old: two mainnet slots, so one
 # missed slot does not hold the wait.
 AT_TIP_S = 24
+# Persistences since the start: the engine writes its in-memory blocks in one batch once more
+# than 50 wait, which a restarted node reaches during its catch-up.
+PERSISTED = "reth_consensus_engine_beacon_persistence_duration_count"
 # The indexer series of the wait: steps finished since the start, and failed steps.
 STEPS = prom.FILTER_MAPS_PREFIX + "step_duration_seconds_count"
 FAILURES = prom.FILTER_MAPS_PREFIX + "failures"
@@ -50,15 +53,19 @@ def restart(
     dry_run: bool = False,
 ) -> None:
     """Drops the page cache around a node restart, then waits until the node has caught up: its
-    latest block is at most `AT_TIP_S` old and, in index mode, the indexer has finished a step
-    since the start, none has failed, and `reth_filter_maps_last_indexed_block` is back at its
-    value before the stop. A restarted node unwinds and executes its last blocks again, and then
-    the blocks of its downtime; a query sent earlier would compete with that work.
+    latest block is at most `AT_TIP_S` old and it has persisted blocks since the start and, in
+    index mode, the indexer has finished a step since the start, none has failed, and
+    `reth_filter_maps_last_indexed_block` is back at its value before the stop. A restarted node
+    unwinds and executes its last blocks again, then the blocks of its downtime, and writes them
+    in one batch; a query sent earlier would compete with that work. The indexer steps only after
+    that write, so every mode waits for it.
 
-    The first indexer step renders the blocks of the map in progress again, since only finished
-    maps are stored. Later steps render only the blocks finalized since, as every epoch of a warm
-    run does, so `cold` does not wait for finality to move."""
-    ready = f"the latest block is at most {AT_TIP_S} s old" + (
+    The first indexer step renders the map group in progress again (32 maps), since a restart
+    resumes at the group's first map; `sample` keeps the queries out of those blocks. A step
+    renders at most 1,000 blocks, so after a long downtime the indexer still catches up when the
+    wait ends. Later steps render only the blocks finalized since, as every epoch of a warm run
+    does, so `cold` does not wait for finality to move."""
+    ready = f"the latest block is at most {AT_TIP_S} s old, the node has persisted blocks since the start" + (
         " and the FilterMaps indexer has finished a step since the start, with its head back at its value before the stop"
         if index_mode
         else ""
@@ -90,18 +97,21 @@ def restart(
 
 
 def _caught_up(rpc_url: str, metrics_url: str, head: int | None) -> bool:
-    """Whether the latest block is at most `AT_TIP_S` old and, given the index head before the stop
-    (`None` outside index mode), the indexer has finished a step since the start and its head is
-    back at `head`. A failed step raises `ColdError`: the counter never goes back to 0."""
+    """Whether the latest block is at most `AT_TIP_S` old, the node has persisted blocks since the
+    start and, given the index head before the stop (`None` outside index mode), the indexer has
+    finished a step since the start and its head is back at `head`. A failed step raises
+    `ColdError`: the counter never goes back to 0."""
     try:
         latest = rpc.Client(rpc_url, timeout_s=PROBE_TIMEOUT_S).call("eth_getBlockByNumber", ["latest", False])
         if time.time() - int(latest["timestamp"], 16) > AT_TIP_S:
             return False
-        if head is None:
-            return True
         snapshot = prom.scrape(metrics_url, timeout_s=PROBE_TIMEOUT_S)
     except (rpc.RpcError, OSError):
         return False
+    if not snapshot.value(PERSISTED):
+        return False
+    if head is None:
+        return True
     if failures := snapshot.value(FAILURES):
         raise ColdError(f"the FilterMaps indexer has failed since the start ({FAILURES} {failures:.0f}); see the node log")
     window = prom.indexed_window(snapshot)
