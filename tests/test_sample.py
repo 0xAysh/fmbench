@@ -364,6 +364,20 @@ class SampleFilesTest(unittest.TestCase):
         self.assertIn("Q4-w500-000", kept)
         self.assertFalse(kept & set(header["dropped_by_cap"]))
 
+    def test_the_cold_file_has_the_first_kept_filter_of_each_cell(self):
+        built = sample.build(FakeNode(), (1_000_000, 1_400_000), 7, 200, [500, 2000, 10000, 100000], 50, 1_000, "6ddddd1072")
+        g7, (header, cold) = built["g7"][1], built["g7-cold"]
+        first = {}
+        for query in g7:
+            first.setdefault(sample.query_cell(query["id"]), query)
+        self.assertEqual(cold, list(first.values()))
+        self.assertEqual(header["kind"], "g7")
+
+    def test_a_dropped_first_filter_leaves_its_cell_to_the_next_one(self):
+        # The cap dropped `Q8-w10000-000`: the cell keeps one filter.
+        g7 = [{"id": i} for i in ("Q1-w500-000", "Q1-w500-001", "Q8-w10000-001", "Q8-w10000-002", "Q8-w500-000")]
+        self.assertEqual([q["id"] for q in sample.cold_queries(g7)], ["Q1-w500-000", "Q8-w10000-001", "Q8-w500-000"])
+
     def test_the_header_records_the_sample(self):
         header = json.loads(self.files(7)["g7"].splitlines()[0])["header"]
         self.assertEqual(

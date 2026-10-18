@@ -1,8 +1,9 @@
 """`sample`: builds the query files from real logs of the indexed window.
 
-It writes three JSONL files, each with a header line: `g7.jsonl` (per class, up to five filters ×
-every width), `g1.jsonl` (random queries for the equality gate) and `oneshot.jsonl` (the first Q1
-and Q9 filters over the whole window, the D2 condition).
+It writes four JSONL files, each with a header line: `g7.jsonl` (per class, up to five filters ×
+every width), `g7-cold.jsonl` (one filter per class and width, for the cold runs), `g1.jsonl`
+(random queries for the equality gate) and `oneshot.jsonl` (the first Q1 and Q9 filters over the
+whole window, the D2 condition).
 """
 
 from __future__ import annotations
@@ -59,6 +60,8 @@ DEFAULT_TAIL_MARGIN = 100_000
 # index. Every G7 query ends at the window's last block and the group in progress only moves up,
 # so no later restart reads a query's blocks while a map averages fewer than 62 blocks.
 HEAD_MARGIN = 2_000
+# The query files, by name. `g7-cold` is a G7 file too (header kind `g7`).
+FILES = ("g7", "g7-cold", "g1", "oneshot")
 # The address counts of the Q8 filters.
 MANY_ADDRESSES = (50, 200, 1000)
 # The most whole-window `eth_getLogs` checks per rare class. Rare candidates pass often (an
@@ -298,6 +301,16 @@ def g7_queries(kept: list[Template], window: tuple[int, int]) -> list[dict[str, 
     return [_query(t.query_id, t.cls, t.width, t.expected, t.pick, window[1] - t.blocks + 1, window[1]) for t in kept]
 
 
+def cold_queries(g7: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Returns the first query of each class and width of `g7`: one filter per cell. A cold run
+    restarts the node before every repetition of every query, minutes each, so the five filters
+    of a cell would take five times as long."""
+    cells: dict[tuple[str, Width], dict[str, Any]] = {}
+    for query in g7:
+        cells.setdefault(query_cell(query["id"]), query)
+    return list(cells.values())
+
+
 def oneshot_queries(selection: Selection, window: tuple[int, int]) -> list[dict[str, Any]]:
     """Returns the first Q1 and the first Q9 filter over the whole window: the D2 condition. The
     result cap does not apply; `expected_logs` is the count the selection measured."""
@@ -362,7 +375,7 @@ def build(
     node_commit: str,
     progress: Callable[[str], None] = lambda _: None,
 ) -> dict[str, tuple[dict[str, Any], list[dict[str, Any]]]]:
-    """Samples the window and returns the header and queries of `g7`, `g1` and `oneshot`.
+    """Samples the window and returns the header and queries of each of `FILES`.
 
     One seeded generator drives every random choice, so the same seed over the same chain gives
     the same files.
@@ -394,8 +407,10 @@ def build(
         "dropped_by_cap": [t.query_id for t in dropped],
         **selection.notes,
     }
+    g7 = g7_queries(kept, window)
     return {
-        "g7": ({**header, "kind": "g7"}, g7_queries(kept, window)),
+        "g7": ({**header, "kind": "g7"}, g7),
+        "g7-cold": ({**header, "kind": "g7"}, cold_queries(g7)),
         "g1": ({**header, "kind": "g1", "count": count}, g1_queries(kept, window, count, rng)),
         "oneshot": ({**header, "kind": "oneshot", "widths": [WINDOW]}, oneshot_queries(selection, window)),
     }
@@ -416,7 +431,7 @@ def read_queries(path: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
 
 
 def add_parser(subparsers: Any) -> None:
-    parser = subparsers.add_parser("sample", help="build g7.jsonl, g1.jsonl and oneshot.jsonl from the indexed window")
+    parser = subparsers.add_parser("sample", help="build the query files (g7, g7-cold, g1, oneshot) from the indexed window")
     meta.add_node_args(parser)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--blocks", type=int, default=2000, help="random blocks whose receipts are tallied")
@@ -438,7 +453,7 @@ def main(args: argparse.Namespace) -> int:
     window = (first + args.tail_margin, last - HEAD_MARGIN)
     if window[0] > window[1]:
         raise SystemExit(f"the indexed window {first}..{last} is shorter than --tail-margin {args.tail_margin} plus the head margin {HEAD_MARGIN}")
-    paths = {kind: os.path.join(args.out, f"{kind}.jsonl") for kind in ("g7", "g1", "oneshot")}
+    paths = {name: os.path.join(args.out, f"{name}.jsonl") for name in FILES}
     existing = [path for path in paths.values() if os.path.exists(path)]
     if existing:
         raise SystemExit(f"refusing to overwrite {', '.join(existing)}: results refer to them; use another --out")
@@ -448,11 +463,11 @@ def main(args: argparse.Namespace) -> int:
 
     built = build(rpc.Client(args.rpc), window, args.seed, args.blocks, args.widths, args.count, args.max_logs, node["commit"], progress)
     os.makedirs(args.out, exist_ok=True)
-    for kind, (header, queries) in built.items():
+    for name, (header, queries) in built.items():
         header["indexed_window"] = [first, last]
-        with open(paths[kind], "w") as file:
+        with open(paths[name], "w") as file:
             file.write(format_queries(header, queries))
-        print(f"{paths[kind]}: {len(queries)} queries")
+        print(f"{paths[name]}: {len(queries)} queries")
     header = built["g7"][0]
     print(f"window {window[0]}..{window[1]}, classes {header['classes']}, Q4 topic0 {header['q4_topic0']} (Transfer: {header['q4_is_transfer']}), Q8 addresses {header['q8_addresses']}, {len(header['dropped_by_cap'])} queries dropped by the result cap")
     return 0
