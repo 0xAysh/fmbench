@@ -131,12 +131,19 @@ class WideRuleTest(unittest.TestCase):
         self.assertEqual(report.g7_verdict("selective", 500, 1.03, 1.20, 0.05, 0.05, GATES), "fail")
 
     def test_a_ratio_within_the_spread_of_a_wide_limit_is_equal(self):
-        # The limit is 0.5: equal from 0.475 to 0.525.
+        # The limit is 0.5: equal from 0.476 to 0.525.
         self.assertEqual(report.g7_verdict("selective", 100_000, 0.51, 0.7, 0.05, 0.05, GATES), "equal")
         self.assertEqual(report.g7_verdict("selective", 100_000, 0.97, 0.7, 0.05, 0.05, GATES), "fail")
 
+    def test_the_band_scales_the_limit_both_ways(self):
+        # A spread of 1.2: one run's p50 was 2.2 × the other's. The band is 0.45 to 2.2, so a
+        # ratio of 0.1 is still faster than the noise explains.
+        self.assertEqual(report.g7_verdict("selective", 500, 0.1, 0.1, 1.2, 1.2, GATES), "pass")
+        # The equal class uses the same band: 1.05 is on its upper edge.
+        self.assertEqual(report.g7_verdict("equal", 500, 1.05, 1.0, 0.05, 0.05, GATES), "pass")
+
     def test_dense_and_equal_rules(self):
-        # The dense limit is 1.10: equal from 1.045 to 1.155.
+        # The dense limit is 1.10: equal from 1.048 to 1.155.
         self.assertEqual(report.g7_verdict("dense", 100_000, 1.0, 2.0, 0.05, 0.05, GATES), "pass")
         self.assertEqual(report.g7_verdict("dense", 500, 1.12, 1.0, 0.05, 0.05, GATES), "equal")
         self.assertEqual(report.g7_verdict("dense", 500, 1.2, 1.0, 0.05, 0.05, GATES), "fail")

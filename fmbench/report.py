@@ -144,10 +144,11 @@ def d2_check(index_ms: float | None, index_error: Any, bloom_p50_ms: float | Non
 
 
 def _outcome(ratio: float, spread: float, limit: float, higher_is_better: bool = False) -> str:
-    """Judges one index/bloom ratio against its limit: `equal` within `spread` of the limit
-    (`limit × (1 ± spread)`), where the noise cannot tell them apart, else `pass` on the better
-    side and `fail` on the worse one. A worse ratio never gets a better verdict."""
-    low, high = limit * (1 - spread), limit * (1 + spread)
+    """Judges one index/bloom ratio against its limit: `equal` from `limit / (1 + spread)` to
+    `limit × (1 + spread)`, where the noise cannot tell them apart, else `pass` on the better side
+    and `fail` on the worse one. The spread is the larger of two runs over the smaller, less 1, so
+    it scales a ratio both ways. A worse ratio never gets a better verdict."""
+    low, high = limit / (1 + spread), limit * (1 + spread)
     if low <= ratio <= high:
         return EQUAL
     return PASS if (ratio > high if higher_is_better else ratio < low) else FAIL
@@ -214,7 +215,7 @@ def g7_verdict(kind: str, width: sample.Width, r50: float, r90: float, s50: floa
     condition. Dense classes check p50 only."""
     rule = gates["g7"][kind]
     if kind == "equal":
-        return PASS if abs(r50 - 1) <= s50 and abs(r90 - 1) <= s90 else FAIL
+        return PASS if _outcome(r50, s50, 1.0) == EQUAL and _outcome(r90, s90, 1.0) == EQUAL else FAIL
     if kind == "dense":
         return _outcome(r50, s50, rule["p50_ratio_max"])
     p50_max = rule["p50_ratio_max"]
